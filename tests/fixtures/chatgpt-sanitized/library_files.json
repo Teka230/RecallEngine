@@ -1,0 +1,10 @@
+[
+  {
+    "id": "lib-001",
+    "file_id": "f-001",
+    "file_name": "notes.md",
+    "mime_type": "text/markdown",
+    "file_size_bytes": 42,
+    "sha256_digest": "abc123"
+  }
+]

@@ -1,0 +1,10 @@
+[
+  {
+    "id": "share-001",
+    "conversation_id": "conv-linear-001",
+    "share_id": "sh-abc",
+    "url": "https://example.com/share/sh-abc",
+    "created_at": "2024-01-01T00:00:00Z",
+    "is_anonymous": false
+  }
+]

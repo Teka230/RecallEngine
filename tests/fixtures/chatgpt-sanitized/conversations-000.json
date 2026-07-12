@@ -1,0 +1,156 @@
+[
+  {
+    "id": "conv-linear-001",
+    "title": "Linear chat",
+    "create_time": 1700000000.0,
+    "update_time": 1700000100.0,
+    "current_node": "node-u1",
+    "default_model_slug": "gpt-4",
+    "is_archived": false,
+    "is_starred": false,
+    "mapping": {
+      "root": {
+        "id": "root",
+        "parent": null,
+        "message": null
+      },
+      "node-u1": {
+        "id": "node-u1",
+        "parent": "root",
+        "message": {
+          "id": "msg-text-001",
+          "author": {"role": "user", "name": null},
+          "create_time": 1700000001.0,
+          "content": {"content_type": "text", "parts": ["Hello world"]},
+          "metadata": {}
+        }
+      }
+    }
+  },
+  {
+    "id": "conv-branch-001",
+    "title": "Branching chat",
+    "create_time": 1700001000.0,
+    "update_time": 1700002000.0,
+    "current_node": "node-a3",
+    "default_model_slug": "gpt-4o",
+    "mapping": {
+      "root-b": {"id": "root-b", "parent": null, "message": null},
+      "node-b0": {
+        "id": "node-b0",
+        "parent": "root-b",
+        "message": {
+          "id": "msg-branch-root",
+          "author": {"role": "user"},
+          "create_time": 1700001001.0,
+          "content": {"content_type": "text", "parts": ["Branch root"]},
+          "metadata": {}
+        }
+      },
+      "node-a1": {
+        "id": "node-a1",
+        "parent": "node-b0",
+        "message": {
+          "id": "msg-branch-a",
+          "author": {"role": "assistant"},
+          "create_time": 1700001002.0,
+          "content": {"content_type": "text", "parts": ["Path A"]},
+          "metadata": {}
+        }
+      },
+      "node-a2": {
+        "id": "node-a2",
+        "parent": "node-b0",
+        "message": {
+          "id": "msg-branch-b",
+          "author": {"role": "assistant"},
+          "create_time": 1700001003.0,
+          "content": {"content_type": "text", "parts": ["Path B"]},
+          "metadata": {}
+        }
+      },
+      "node-a3": {
+        "id": "node-a3",
+        "parent": "node-b0",
+        "message": {
+          "id": "msg-branch-c",
+          "author": {"role": "assistant"},
+          "create_time": 1700001004.0,
+          "content": {"content_type": "text", "parts": ["Path C"]},
+          "metadata": {}
+        }
+      }
+    }
+  },
+  {
+    "id": "conv-rich-001",
+    "title": "Rich content types",
+    "create_time": 1700003000.0,
+    "update_time": 1700004000.0,
+    "current_node": "node-rich-4",
+    "mapping": {
+      "root-r": {"id": "root-r", "parent": null, "message": null},
+      "node-rich-1": {
+        "id": "node-rich-1",
+        "parent": "root-r",
+        "message": {
+          "id": "msg-multimodal-001",
+          "author": {"role": "user"},
+          "create_time": 1700003001.0,
+          "content": {
+            "content_type": "multimodal_text",
+            "parts": [
+              "See attached",
+              {"asset_pointer": "file-service://file-fixture-asset", "size_bytes": 100}
+            ]
+          },
+          "metadata": {
+            "attachments": [
+              {"id": "file-fixture-asset", "name": "shared.png", "mimeType": "image/png"}
+            ]
+          }
+        }
+      },
+      "node-rich-2": {
+        "id": "node-rich-2",
+        "parent": "node-rich-1",
+        "message": {
+          "id": "msg-thoughts-001",
+          "author": {"role": "assistant"},
+          "create_time": 1700003002.0,
+          "content": {"content_type": "thoughts", "parts": [{"summary": "thinking..."}]},
+          "metadata": {}
+        }
+      },
+      "node-rich-3": {
+        "id": "node-rich-3",
+        "parent": "node-rich-2",
+        "message": {
+          "id": "msg-reasoning-001",
+          "author": {"role": "assistant"},
+          "create_time": 1700003003.0,
+          "content": {"content_type": "reasoning_recap", "parts": ["Recap text"]},
+          "metadata": {}
+        }
+      },
+      "node-rich-4": {
+        "id": "node-rich-4",
+        "parent": "node-rich-3",
+        "message": {
+          "id": "msg-shared-asset-002",
+          "author": {"role": "user"},
+          "create_time": 1700003004.0,
+          "content": {"content_type": "text", "parts": ["Same asset again"]},
+          "metadata": {
+            "attachments": [
+              {"id": "file-fixture-asset", "name": "shared.png", "mimeType": "image/png"}
+            ],
+            "content_references": [
+              {"type": "hidden", "matched_text": "cite"}
+            ]
+          }
+        }
+      }
+    }
+  }
+]

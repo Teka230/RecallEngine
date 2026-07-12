@@ -1,0 +1,23 @@
+[
+  {
+    "id": "conv-sidecar-001",
+    "title": "Sidecar fragment",
+    "create_time": 1700005000.0,
+    "update_time": 1700005001.0,
+    "current_node": "node-s1",
+    "mapping": {
+      "root-s": {"id": "root-s", "parent": null, "message": null},
+      "node-s1": {
+        "id": "node-s1",
+        "parent": "root-s",
+        "message": {
+          "id": "msg-feedback-target",
+          "author": {"role": "assistant"},
+          "create_time": 1700005001.0,
+          "content": {"content_type": "text", "parts": ["Feedback target"]},
+          "metadata": {}
+        }
+      }
+    }
+  }
+]
