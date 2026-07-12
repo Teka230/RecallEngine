@@ -164,7 +164,7 @@ const REFERENCE_ROLE_SQL: &str = "LOWER(TRIM(COALESCE(m.role, ''))) IN ('user', 
 
 pub fn get_active_message_by_ic(conn: &Connection, ic: i64) -> Result<Option<ReferencedMessage>> {
     let mut statement = conn.prepare(&format!(
-        "SELECT m.id, m.ic, m.conversation_id, COALESCE(c.title, 'Sans titre'),
+        "SELECT m.id, m.ic, m.conversation_id, COALESCE(c.title, 'Untitled'),
                 COALESCE(m.role, 'unknown'),
                 COALESCE((
                     SELECT GROUP_CONCAT(text_content, char(10))
@@ -192,7 +192,7 @@ pub fn get_active_message_by_id(
     message_id: &str,
 ) -> Result<Option<ReferencedMessage>> {
     let mut statement = conn.prepare(&format!(
-        "SELECT m.id, m.ic, m.conversation_id, COALESCE(c.title, 'Sans titre'),
+        "SELECT m.id, m.ic, m.conversation_id, COALESCE(c.title, 'Untitled'),
                 COALESCE(m.role, 'unknown'),
                 COALESCE((
                     SELECT GROUP_CONCAT(text_content, char(10))
@@ -285,7 +285,7 @@ fn fetch_neighbors(
     let comparison = if after { ">" } else { "<" };
     let ordering = if after { "ASC" } else { "DESC" };
     let sql = format!(
-        "SELECT m.id, m.ic, m.conversation_id, COALESCE(c.title, 'Sans titre'),
+        "SELECT m.id, m.ic, m.conversation_id, COALESCE(c.title, 'Untitled'),
                 COALESCE(m.role, 'unknown'),
                 COALESCE((
                     SELECT GROUP_CONCAT(text_content, char(10))

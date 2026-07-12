@@ -26,7 +26,7 @@ pub fn run(options: ShowOptions) -> Result<()> {
     let after = options.after.unwrap_or(0);
     if before > MAX_CONTEXT_MESSAGES || after > MAX_CONTEXT_MESSAGES {
         return Err(RecallError::msg(format!(
-            "before et after doivent être inférieurs ou égaux à {MAX_CONTEXT_MESSAGES}"
+            "before and after must be less than or equal to {MAX_CONTEXT_MESSAGES}"
         )));
     }
 

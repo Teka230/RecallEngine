@@ -240,7 +240,7 @@ pub fn create_titles_view(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Aligne `messages_fts` + triggers sur le schéma GPTExtractor / ExploGPT.
+/// Aligns `messages_fts` and its triggers with the GPTExtractor / ExploGPT schema.
 pub fn ensure_legacy_fts5(conn: &Connection) -> Result<bool> {
     let has_messages: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages'",

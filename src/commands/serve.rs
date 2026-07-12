@@ -321,7 +321,7 @@ async fn get_message_context(
     if before > 50 || after > 50 {
         return Err((
             StatusCode::BAD_REQUEST,
-            "before et after doivent être inférieurs ou égaux à 50".into(),
+            "before and after must be less than or equal to 50".into(),
         ));
     }
     let scope = query.scope.unwrap_or(ContextScope::Conversation);

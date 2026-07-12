@@ -1716,7 +1716,7 @@ mod tests {
 
     #[test]
     fn truncates_on_character_boundaries() {
-        assert_eq!(truncate("éclair", 2), "éc…");
+        assert_eq!(truncate("A🦀B", 2), "A🦀…");
         assert_eq!(first_line("one\ntwo", 10), "one");
     }
 
