@@ -9,6 +9,7 @@ use crate::domain::canonical::{
 };
 use crate::error::Result;
 use crate::storage::schema;
+use crate::storage::sql_idents::{FragmentTable, SidecarTable};
 
 #[derive(Debug, Clone)]
 pub struct ImportIssue {
@@ -79,6 +80,8 @@ impl Database {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
+        // Journal mode: DELETE/rollback (PR-H5 Outcome A). Do not enable WAL here —
+        // see tests/sqlite_concurrency.rs and the README concurrency note.
         conn.execute("PRAGMA foreign_keys = ON", [])?;
         schema::apply_migrations(&conn)?;
         Ok(Self { conn })
@@ -323,20 +326,29 @@ impl Database {
     }
 
     pub fn reconcile_fragment(&self, run_id: &str, relative_path: &str) -> Result<()> {
-        for table in ["conversations", "nodes", "messages"] {
+        for table in FragmentTable::ALL {
+            // Identifier slot: only FragmentTable::sql_name() may supply the table name.
             let sql = format!(
-                "UPDATE {table} SET is_active = 0
-                 WHERE source_relative_path = ?1 AND last_seen_import_run_id != ?2 AND is_active = 1"
+                "UPDATE {} SET is_active = 0
+                 WHERE source_relative_path = ?1 AND last_seen_import_run_id != ?2 AND is_active = 1",
+                table.sql_name()
             );
             self.conn.execute(&sql, params![relative_path, run_id])?;
         }
         Ok(())
     }
 
-    pub fn reconcile_sidecar(&self, run_id: &str, relative_path: &str, table: &str) -> Result<()> {
+    pub fn reconcile_sidecar(
+        &self,
+        run_id: &str,
+        relative_path: &str,
+        table: SidecarTable,
+    ) -> Result<()> {
+        // Identifier slot: only SidecarTable::sql_name() may supply the table name.
         let sql = format!(
-            "UPDATE {table} SET is_active = 0
-             WHERE source_relative_path = ?1 AND last_seen_import_run_id != ?2 AND is_active = 1"
+            "UPDATE {} SET is_active = 0
+             WHERE source_relative_path = ?1 AND last_seen_import_run_id != ?2 AND is_active = 1",
+            table.sql_name()
         );
         self.conn.execute(&sql, params![relative_path, run_id])?;
         Ok(())
@@ -478,5 +490,126 @@ impl Database {
             .parent()
             .map(|p| p.join("reports"))
             .unwrap_or_else(|| PathBuf::from("reports"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::sql_idents::SidecarTable;
+
+    fn seed_import_run(db: &Database, label: &str) -> String {
+        db.create_import_run(label, false).unwrap()
+    }
+
+    #[test]
+    fn reconcile_sidecar_deactivates_stale_feedback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("fb.sqlite")).unwrap();
+        let run_a = seed_import_run(&db, "a");
+        db.upsert_feedback(FeedbackUpsert {
+            run_id: &run_a,
+            id: "fb-1",
+            message_id: Some("msg-1"),
+            rating: Some("thumbs_up"),
+            tags: None,
+            text: None,
+            created_at: None,
+            raw_json: "{}",
+        })
+        .unwrap();
+
+        let run_b = seed_import_run(&db, "b");
+        db.reconcile_sidecar(&run_b, "message_feedback.json", SidecarTable::Feedback)
+            .unwrap();
+
+        let active: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM feedback WHERE id = 'fb-1' AND is_active = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn reconcile_sidecar_deactivates_stale_shared_conversations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("shared.sqlite")).unwrap();
+        let run_a = seed_import_run(&db, "a");
+        db.upsert_shared(SharedUpsert {
+            run_id: &run_a,
+            id: "sh-1",
+            conversation_id: Some("conv-1"),
+            share_id: Some("share-1"),
+            url: None,
+            created_at: None,
+            is_anonymous: 0,
+            raw_json: "{}",
+        })
+        .unwrap();
+
+        let run_b = seed_import_run(&db, "b");
+        db.reconcile_sidecar(
+            &run_b,
+            "shared_conversations.json",
+            SidecarTable::SharedConversations,
+        )
+        .unwrap();
+
+        let active: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM shared_conversations WHERE id = 'sh-1' AND is_active = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn reconcile_sidecar_deactivates_stale_library_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("lib.sqlite")).unwrap();
+        let run_a = seed_import_run(&db, "a");
+        db.upsert_library_file(LibraryFileUpsert {
+            run_id: &run_a,
+            id: "lib-1",
+            file_id: Some("file-1"),
+            file_name: Some("doc.pdf"),
+            mime_type: None,
+            file_size_bytes: None,
+            sha256_digest: None,
+            raw_json: "{}",
+        })
+        .unwrap();
+
+        let run_b = seed_import_run(&db, "b");
+        db.reconcile_sidecar(&run_b, "library_files.json", SidecarTable::LibraryFiles)
+            .unwrap();
+
+        let active: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM library_files WHERE id = 'lib-1' AND is_active = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn sidecar_table_sql_names_are_closed() {
+        assert_eq!(SidecarTable::Feedback.sql_name(), "feedback");
+        assert_eq!(
+            SidecarTable::SharedConversations.sql_name(),
+            "shared_conversations"
+        );
+        assert_eq!(SidecarTable::LibraryFiles.sql_name(), "library_files");
+        assert_eq!(SidecarTable::ALL.len(), 3);
     }
 }

@@ -2,28 +2,29 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
+use crate::domain::projections::{count_active, count_all};
 use crate::error::Result;
-use crate::storage::Database;
+use crate::storage::{CountableTable, Database};
 
 pub fn run(db_path: PathBuf, as_json: bool) -> Result<()> {
     let db = Database::open(&db_path)?;
     let conn = db.connection();
 
     let stats = json!({
-        "conversations": count_active(conn, "conversations")?,
-        "nodes": count_active(conn, "nodes")?,
-        "messages": count_active(conn, "messages")?,
+        "conversations": count_active(conn, CountableTable::Conversations)?,
+        "nodes": count_active(conn, CountableTable::Nodes)?,
+        "messages": count_active(conn, CountableTable::Messages)?,
         "assistant_messages": count_role(conn, "assistant")?,
         "user_messages": count_role(conn, "user")?,
         "branching_conversations": branching_conversations(conn)?,
         "branch_points": branch_points(conn)?,
         "max_children": max_children(conn)?,
-        "mapped_assets": count_all(conn, "assets")?,
+        "mapped_assets": count_all(conn, CountableTable::Assets)?,
         "attachments": count_message_assets(conn)?,
-        "content_references": count_all(conn, "content_references")?,
-        "feedback": count_active(conn, "feedback")?,
-        "shared_conversations": count_active(conn, "shared_conversations")?,
-        "library_files": count_active(conn, "library_files")?,
+        "content_references": count_all(conn, CountableTable::ContentReferences)?,
+        "feedback": count_active(conn, CountableTable::Feedback)?,
+        "shared_conversations": count_active(conn, CountableTable::SharedConversations)?,
+        "library_files": count_active(conn, CountableTable::LibraryFiles)?,
     });
 
     if as_json {
@@ -34,16 +35,6 @@ pub fn run(db_path: PathBuf, as_json: bool) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn count_active(conn: &rusqlite::Connection, table: &str) -> Result<i64> {
-    let sql = format!("SELECT COUNT(*) FROM {table} WHERE is_active = 1");
-    Ok(conn.query_row(&sql, [], |r| r.get(0))?)
-}
-
-fn count_all(conn: &rusqlite::Connection, table: &str) -> Result<i64> {
-    let sql = format!("SELECT COUNT(*) FROM {table}");
-    Ok(conn.query_row(&sql, [], |r| r.get(0))?)
 }
 
 fn count_role(conn: &rusqlite::Connection, role: &str) -> Result<i64> {

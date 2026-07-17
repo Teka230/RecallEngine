@@ -1,6 +1,7 @@
 pub mod browse;
 pub mod export;
 pub mod import;
+pub mod search;
 pub mod serve;
 pub mod show;
 pub mod stats;
@@ -58,14 +59,51 @@ pub fn run(cli: Cli) -> Result<()> {
             ic,
             conversation,
         } => browse::run(db, ic, conversation),
+        Commands::Tools { db } => export::tools::run(db),
         Commands::Serve {
             db,
             assets_dir,
             host,
             port,
-        } => serve::run(db, assets_dir, host, port),
+            allow_remote,
+        } => serve::run(db, assets_dir, host, port, allow_remote),
         Commands::Export { target } => match target {
-            ExportTarget::LegacySqlite { db, output } => export::run_legacy_sqlite(db, output),
+            ExportTarget::LegacySqlite { db, output } => {
+                let out =
+                    output.unwrap_or_else(|| db.parent().unwrap().join("exports/legacy.sqlite"));
+                export::legacy_sqlite::run_legacy_sqlite(db, out)
+            }
+            ExportTarget::Markdown { db, ic, out } => {
+                let out = out.unwrap_or_else(|| db.parent().unwrap().join("exports/markdown"));
+                export::markdown::run_markdown(db, ic, out)
+            }
+            ExportTarget::Bundle {
+                db,
+                out,
+                profile,
+                format,
+            } => {
+                let out = out
+                    .unwrap_or_else(|| db.parent().unwrap().join(format!("exports/{}", profile)));
+                export::bundles::run_bundle(db, out, profile, format)
+            }
         },
+        Commands::Search {
+            db,
+            query,
+            syntax,
+            count_mode,
+            role,
+            ic_min,
+            ic_max,
+            date_min,
+            date_max,
+            limit,
+            offset,
+            json,
+        } => search::run_search(
+            db, query, syntax, count_mode, role, ic_min, ic_max, date_min, date_max, limit, offset,
+            json,
+        ),
     }
 }

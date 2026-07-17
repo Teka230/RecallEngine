@@ -5,6 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{RecallError, Result};
+use crate::storage::TRUSTED_REFERENCE_ROLE_PREDICATE;
 
 /// Roles eligible for public IC references. Other source roles remain in the
 /// canonical DB but are not addressable through the IC reference scheme.
@@ -160,8 +161,6 @@ pub struct IcContext {
     pub range: IcRange,
 }
 
-const REFERENCE_ROLE_SQL: &str = "LOWER(TRIM(COALESCE(m.role, ''))) IN ('user', 'assistant')";
-
 pub fn get_active_message_by_ic(conn: &Connection, ic: i64) -> Result<Option<ReferencedMessage>> {
     let mut statement = conn.prepare(&format!(
         "SELECT m.id, m.ic, m.conversation_id, COALESCE(c.title, 'Untitled'),
@@ -178,7 +177,7 @@ pub fn get_active_message_by_ic(conn: &Connection, ic: i64) -> Result<Option<Ref
                 m.create_time, m.timestamp
          FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
-         WHERE m.ic = ?1 AND m.is_active = 1 AND c.is_active = 1 AND {REFERENCE_ROLE_SQL}
+         WHERE m.ic = ?1 AND m.is_active = 1 AND c.is_active = 1 AND {TRUSTED_REFERENCE_ROLE_PREDICATE}
          LIMIT 1"
     ))?;
     let row = statement
@@ -206,7 +205,7 @@ pub fn get_active_message_by_id(
                 m.create_time, m.timestamp
          FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
-         WHERE m.id = ?1 AND m.is_active = 1 AND c.is_active = 1 AND {REFERENCE_ROLE_SQL}
+         WHERE m.id = ?1 AND m.is_active = 1 AND c.is_active = 1 AND {TRUSTED_REFERENCE_ROLE_PREDICATE}
          LIMIT 1"
     ))?;
     Ok(statement
@@ -300,7 +299,7 @@ fn fetch_neighbors(
          FROM messages m
          JOIN conversations c ON c.id = m.conversation_id
          WHERE m.ic {comparison} ?1 AND m.is_active = 1 AND c.is_active = 1
-           AND {REFERENCE_ROLE_SQL}
+           AND {TRUSTED_REFERENCE_ROLE_PREDICATE}
            {conversation_filter}
          ORDER BY m.ic {ordering}
          LIMIT ?2",

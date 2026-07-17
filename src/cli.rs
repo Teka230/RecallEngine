@@ -1,8 +1,10 @@
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::domain::reference::ContextScope;
+use crate::search::{CountMode, SearchRole, SearchSyntax};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -60,19 +62,51 @@ pub enum Commands {
         #[arg(long, conflicts_with = "ic")]
         conversation: Option<String>,
     },
+    Tools {
+        #[arg(long)]
+        db: PathBuf,
+    },
     Serve {
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
         assets_dir: Option<PathBuf>,
         #[arg(long, default_value = "127.0.0.1")]
-        host: String,
+        host: IpAddr,
         #[arg(long, default_value_t = 8788)]
         port: u16,
+        /// Allow binding outside loopback. The API has no authentication or TLS.
+        #[arg(long)]
+        allow_remote: bool,
     },
     Export {
         #[command(subcommand)]
         target: ExportTarget,
+    },
+    Search {
+        #[arg(long)]
+        db: PathBuf,
+        query: String,
+        #[arg(long, value_enum, default_value = "simple")]
+        syntax: SearchSyntax,
+        #[arg(long, value_enum, default_value = "none")]
+        count_mode: CountMode,
+        #[arg(long, value_enum)]
+        role: Option<SearchRole>,
+        #[arg(long)]
+        ic_min: Option<i64>,
+        #[arg(long)]
+        ic_max: Option<i64>,
+        #[arg(long)]
+        date_min: Option<f64>,
+        #[arg(long)]
+        date_max: Option<f64>,
+        #[arg(long, default_value = "10")]
+        limit: u32,
+        #[arg(long, default_value = "0")]
+        offset: u32,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -107,7 +141,25 @@ pub enum ExportTarget {
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
+    },
+    Markdown {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        ic: i64,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    Bundle {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value = "notebooklm")]
+        profile: String,
+        #[arg(long, default_value = "dir")]
+        format: String,
     },
 }
 

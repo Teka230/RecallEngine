@@ -149,13 +149,13 @@ pub fn parse_fragment(
 
     for (conv_index, conv) in conversations.into_iter().enumerate() {
         if !conv.is_object() || conv.as_object().is_some_and(|o| o.is_empty()) {
-            tracing::warn!(
-                "skipping invalid conversation at index {conv_index} in {relative_path}"
+            tracing::debug!(
+                "skipping invalid conversation at index {conv_index} in {relative_path} (Empty object from OpenAI)"
             );
             continue;
         }
         let Some(conv_id) = conversation_id(&conv) else {
-            tracing::warn!(
+            tracing::debug!(
                 "skipping conversation without id at index {conv_index} in {relative_path}"
             );
             continue;

@@ -1,5 +1,5 @@
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path as FsPath, PathBuf},
     sync::Arc,
 };
@@ -126,12 +126,36 @@ struct AssetListItem {
 
 type ApiResult<T> = std::result::Result<Json<T>, (StatusCode, String)>;
 
-pub fn run(db_path: PathBuf, assets_dir: Option<PathBuf>, host: String, port: u16) -> Result<()> {
+/// Reject non-loopback binds unless the operator passes `--allow-remote`.
+pub fn validate_bind_host(host: IpAddr, allow_remote: bool) -> Result<()> {
+    if host.is_loopback() || allow_remote {
+        return Ok(());
+    }
+    Err(RecallError::msg(format!(
+        "refusing to bind {host}: the API has no authentication or TLS. \
+         Use a loopback address (127.0.0.1 or ::1), or pass --allow-remote if you intentionally expose it."
+    )))
+}
+
+pub fn run(
+    db_path: PathBuf,
+    assets_dir: Option<PathBuf>,
+    host: IpAddr,
+    port: u16,
+    allow_remote: bool,
+) -> Result<()> {
+    // Validate before opening the database so a rejected remote bind never mutates it.
+    validate_bind_host(host, allow_remote)?;
+    if !host.is_loopback() {
+        eprintln!(
+            "WARNING: binding to {host} with --allow-remote. \
+             The API has no authentication or TLS and may expose private conversation data."
+        );
+    }
+
     // Apply pending migrations before switching to the read-only API connection.
     Database::open(&db_path)?;
-    let addr = format!("{host}:{port}")
-        .parse::<SocketAddr>()
-        .map_err(|error| RecallError::msg(error.to_string()))?;
+    let addr = SocketAddr::new(host, port);
     tokio::runtime::Runtime::new()?.block_on(async move {
         let app = app(db_path, assets_dir);
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -507,7 +531,13 @@ fn to_reference_error(error: RecallError) -> (StatusCode, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::confined_asset_path;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::path::PathBuf;
+
+    use clap::Parser;
+
+    use super::{confined_asset_path, run, validate_bind_host};
+    use crate::cli::{Cli, Commands};
 
     #[test]
     fn confines_asset_paths_to_root() {
@@ -516,5 +546,95 @@ mod tests {
         assert!(confined_asset_path(root.path(), "ok.txt").is_ok());
         assert!(confined_asset_path(root.path(), "../outside.txt").is_err());
         assert!(confined_asset_path(root.path(), "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn validate_bind_host_table() {
+        let cases: &[(IpAddr, bool, bool)] = &[
+            (IpAddr::V4(Ipv4Addr::LOCALHOST), false, true),
+            (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), false, true),
+            (IpAddr::V6(Ipv6Addr::LOCALHOST), false, true),
+            (IpAddr::V4(Ipv4Addr::UNSPECIFIED), false, false),
+            (IpAddr::V6(Ipv6Addr::UNSPECIFIED), false, false),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), false, false),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), false, false),
+            (IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), false, false),
+            (IpAddr::V4(Ipv4Addr::UNSPECIFIED), true, true),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), true, true),
+            (IpAddr::V6(Ipv6Addr::UNSPECIFIED), true, true),
+        ];
+
+        for &(host, allow_remote, expect_ok) in cases {
+            let result = validate_bind_host(host, allow_remote);
+            assert_eq!(
+                result.is_ok(),
+                expect_ok,
+                "host={host} allow_remote={allow_remote} => {result:?}"
+            );
+            if !expect_ok {
+                let message = result.unwrap_err().to_string();
+                assert!(
+                    message.contains("--allow-remote"),
+                    "error should explain how to proceed: {message}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cli_parses_allow_remote_and_ip_host() {
+        let cli = Cli::parse_from([
+            "recall",
+            "serve",
+            "--db",
+            "history.sqlite",
+            "--host",
+            "0.0.0.0",
+            "--allow-remote",
+        ]);
+        match cli.command {
+            Commands::Serve {
+                host, allow_remote, ..
+            } => {
+                assert_eq!(host, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                assert!(allow_remote);
+            }
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_non_ip_host() {
+        let result = Cli::try_parse_from([
+            "recall",
+            "serve",
+            "--db",
+            "history.sqlite",
+            "--host",
+            "localhost",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn remote_bind_rejected_before_database_open() {
+        let missing = PathBuf::from("/definitely/missing/recallengine-no-such-db.sqlite");
+        let err = run(
+            missing,
+            None,
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            8788,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("--allow-remote"),
+            "expected bind policy error, got: {err}"
+        );
+        assert!(
+            !err.to_lowercase().contains("no such file"),
+            "must fail before opening the database: {err}"
+        );
     }
 }

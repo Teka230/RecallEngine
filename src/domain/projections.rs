@@ -2,6 +2,7 @@ use rusqlite::Connection;
 
 use crate::domain::canonical::{ConversationRecord, MessageCandidate, NodeRecord};
 use crate::error::Result;
+use crate::storage::sql_idents::CountableTable;
 
 pub fn count_branching(conn: &Connection) -> Result<(i64, i64, i64)> {
     let branching: i64 = conn.query_row(
@@ -43,19 +44,31 @@ pub fn count_by_role(conn: &Connection, role: &str) -> Result<i64> {
     Ok(c)
 }
 
-pub fn table_count(conn: &Connection, table: &str) -> Result<i64> {
-    let sql = format!("SELECT COUNT(*) FROM {table} WHERE is_active = 1");
-    let c: i64 = conn.query_row(&sql, [], |r| r.get(0)).or_else(|_| {
-        let sql_all = format!("SELECT COUNT(*) FROM {table}");
-        conn.query_row(&sql_all, [], |r| r.get(0))
-    })?;
-    Ok(c)
+pub fn table_count(conn: &Connection, table: CountableTable) -> Result<i64> {
+    if table.supports_active_filter() {
+        count_active(conn, table).or_else(|_| count_all(conn, table))
+    } else {
+        count_all(conn, table)
+    }
 }
 
-pub fn table_count_all(conn: &Connection, table: &str) -> Result<i64> {
-    let sql = format!("SELECT COUNT(*) FROM {table}");
-    let c: i64 = conn.query_row(&sql, [], |r| r.get(0))?;
-    Ok(c)
+pub fn table_count_all(conn: &Connection, table: CountableTable) -> Result<i64> {
+    count_all(conn, table)
+}
+
+pub fn count_active(conn: &Connection, table: CountableTable) -> Result<i64> {
+    // Identifier slot: only CountableTable::sql_name() may supply the table name.
+    let sql = format!(
+        "SELECT COUNT(*) FROM {} WHERE is_active = 1",
+        table.sql_name()
+    );
+    Ok(conn.query_row(&sql, [], |r| r.get(0))?)
+}
+
+pub fn count_all(conn: &Connection, table: CountableTable) -> Result<i64> {
+    // Identifier slot: only CountableTable::sql_name() may supply the table name.
+    let sql = format!("SELECT COUNT(*) FROM {}", table.sql_name());
+    Ok(conn.query_row(&sql, [], |r| r.get(0))?)
 }
 
 pub fn active_conversations_with_branches(conn: &Connection) -> Result<i64> {
@@ -73,3 +86,43 @@ pub fn active_conversations_with_branches(conn: &Connection) -> Result<i64> {
 
 #[allow(dead_code)]
 pub fn _unused_types(_: ConversationRecord, _: NodeRecord, _: MessageCandidate) {}
+
+#[cfg(test)]
+mod tests {
+    use super::{count_active, count_all, table_count, table_count_all};
+    use crate::storage::sql_idents::CountableTable;
+    use crate::storage::Database;
+
+    #[test]
+    fn countable_table_parity_on_empty_schema() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("parity.sqlite")).unwrap();
+        let conn = db.connection();
+
+        for table in [
+            CountableTable::Conversations,
+            CountableTable::Nodes,
+            CountableTable::Messages,
+            CountableTable::Assets,
+            CountableTable::Feedback,
+            CountableTable::SharedConversations,
+            CountableTable::LibraryFiles,
+        ] {
+            assert_eq!(count_active(conn, table).unwrap(), 0);
+            assert_eq!(table_count(conn, table).unwrap(), 0);
+        }
+
+        assert_eq!(
+            count_all(conn, CountableTable::ContentReferences).unwrap(),
+            0
+        );
+        assert_eq!(
+            table_count_all(conn, CountableTable::ContentReferences).unwrap(),
+            0
+        );
+        assert_eq!(
+            table_count(conn, CountableTable::ContentReferences).unwrap(),
+            0
+        );
+    }
+}

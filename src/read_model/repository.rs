@@ -7,8 +7,9 @@ use crate::domain::reference::{
     resolve_message_reference, ContextScope, IcContext, MessageReference, ReferencedMessage,
 };
 use crate::error::{RecallError, Result};
+use crate::storage::TRUSTED_REFERENCE_ROLE_PREDICATE;
 
-const REFERENCE_ROLE_SQL: &str = "LOWER(TRIM(COALESCE(m.role, ''))) IN ('user', 'assistant')";
+// Trusted static predicate fragment: never accept runtime input here.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConversationListItem {
@@ -283,7 +284,7 @@ impl ReadRepository {
                  WHERE n.is_active = 1
              )
              SELECT m.id,
-                    CASE WHEN {REFERENCE_ROLE_SQL} THEN m.ic ELSE NULL END,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
                     n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'),
                     COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
                         SELECT cb.text_content FROM content_blocks cb
@@ -302,7 +303,7 @@ impl ReadRepository {
         let limit = i64::try_from(limit.min(500)).unwrap_or(500);
         let mut statement = self.conn.prepare(&format!(
             "SELECT m.id,
-                    CASE WHEN {REFERENCE_ROLE_SQL} THEN m.ic ELSE NULL END,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
                     n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'),
                     COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
                         SELECT cb.text_content FROM content_blocks cb
@@ -320,7 +321,7 @@ impl ReadRepository {
     pub fn conversation_messages(&self, conversation_id: &str) -> Result<Vec<MessageView>> {
         let mut statement = self.conn.prepare(&format!(
             "SELECT m.id,
-                    CASE WHEN {REFERENCE_ROLE_SQL} THEN m.ic ELSE NULL END,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
                     n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'),
                     COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
                         SELECT cb.text_content FROM content_blocks cb
@@ -347,7 +348,7 @@ impl ReadRepository {
         let limit = i64::try_from(limit.min(500)).unwrap_or(500);
         let fts_sql = format!(
             "SELECT m.conversation_id, COALESCE(c.title, 'Untitled'), m.id,
-                    CASE WHEN {REFERENCE_ROLE_SQL} THEN m.ic ELSE NULL END,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
                     COALESCE(m.role, 'unknown'), cb.text_content, m.create_time, m.timestamp
              FROM content_blocks cb JOIN content_blocks_fts fts ON cb.rowid = fts.rowid
              JOIN messages m ON m.id = cb.message_id
@@ -377,7 +378,7 @@ impl ReadRepository {
         let pattern = format!("%{term}%");
         let like_sql = format!(
             "SELECT m.conversation_id, COALESCE(c.title, 'Untitled'), m.id,
-                    CASE WHEN {REFERENCE_ROLE_SQL} THEN m.ic ELSE NULL END,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
                     COALESCE(m.role, 'unknown'), cb.text_content, m.create_time, m.timestamp
              FROM content_blocks cb JOIN messages m ON m.id = cb.message_id
              JOIN conversations c ON c.id = m.conversation_id
@@ -411,7 +412,7 @@ impl ReadRepository {
                      FROM messages m
                      JOIN conversations c ON c.id = m.conversation_id
                      WHERE m.ic = ?1 AND m.is_active = 1 AND c.is_active = 1
-                       AND {REFERENCE_ROLE_SQL}
+                       AND {TRUSTED_REFERENCE_ROLE_PREDICATE}
                      LIMIT 1"
                 ),
                 [ic],
@@ -439,7 +440,7 @@ impl ReadRepository {
              FROM messages m JOIN nodes n ON n.id = m.node_id
              JOIN conversations c ON c.id = m.conversation_id
              WHERE m.ic = ?1 AND m.is_active = 1 AND n.is_active = 1 AND c.is_active = 1
-               AND {REFERENCE_ROLE_SQL} LIMIT 1"
+               AND {TRUSTED_REFERENCE_ROLE_PREDICATE} LIMIT 1"
         ))?;
         statement
             .query_row([ic], map_message_view)
@@ -503,7 +504,7 @@ impl ReadRepository {
     pub fn branches_for_parent(&self, parent_node_id: &str) -> Result<Vec<BranchChoice>> {
         let mut statement = self.conn.prepare(&format!(
             "SELECT n.id, m.id,
-                    CASE WHEN {REFERENCE_ROLE_SQL} THEN m.ic ELSE NULL END,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
                     m.role,
                     COALESCE((SELECT cb.text_content FROM content_blocks cb
                               WHERE cb.message_id = m.id ORDER BY cb.ordinal LIMIT 1), '')
@@ -594,7 +595,7 @@ impl ReadRepository {
         }
         let mut statement = self.conn.prepare(&format!(
             "SELECT n.id, n.parent_id, m.id,
-                    CASE WHEN {REFERENCE_ROLE_SQL} THEN m.ic ELSE NULL END,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
                     m.role,
                     COALESCE((SELECT cb.text_content FROM content_blocks cb
                               WHERE cb.message_id = m.id ORDER BY cb.ordinal LIMIT 1), '')

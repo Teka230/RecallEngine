@@ -117,6 +117,35 @@ For the bundled sanitized fixture, a successful run produces output like this:
 
 `verify` exits successfully when the database is internally consistent. Missing local assets in `external` mode are reported as warnings, not verification failures.
 
+### Inspect tool usage
+
+`tools` scans `messages.raw_json` and prints a stable JSON summary of tool calls and tool results. It is read-only: it does not write the database or contact the network.
+
+```bash
+./target/release/recall tools --db /path/to/history.sqlite
+```
+
+Example shape:
+
+```json
+{
+  "total_calls": 4,
+  "total_results": 2,
+  "tools": {
+    "browser.search": {
+      "calls": 2,
+      "results": 1
+    },
+    "python": {
+      "calls": 1,
+      "results": 1
+    }
+  }
+}
+```
+
+Tool names are sorted alphabetically. Counts come from assistant `tool_calls`, recipient / `function_call` fallbacks, and `tool` / named `system` result messages in the stored source JSON.
+
 ### Human-readable message references
 
 The SQLite database is the source of truth for all IC values. IC references resolve only active `user` and `assistant` messages; technical roles such as `system` and `tool` remain stored but are not citation targets. The source message ID is the portable anchor stored in `messages.id`; the IC is the short local address, stable inside a given canonical database. New citations keep both together:
@@ -175,6 +204,16 @@ Start the read-only API against an imported database:
 curl http://127.0.0.1:8788/api/health
 ```
 
+Binding outside loopback requires an explicit operator consent flag:
+
+```bash
+# rejected — accidental LAN/public exposure
+./target/release/recall serve --db /path/to/history.sqlite --host 0.0.0.0
+
+# allowed only with consent; emits a stderr privacy warning
+./target/release/recall serve --db /path/to/history.sqlite --host 0.0.0.0 --allow-remote
+```
+
 | Endpoint | Description |
 | --- | --- |
 | `GET /api/health` | Health response. |
@@ -190,7 +229,7 @@ curl http://127.0.0.1:8788/api/health
 | `GET /api/assets/{id}/file` | Serve a locally copied or symlinked asset. |
 
 > [!CAUTION]
-> **Your history is extremely sensitive.** The API has **no authentication and no TLS**. Keep its default loopback binding (`127.0.0.1`); never expose it to your LAN, the internet, a reverse proxy, or untrusted users.
+> **Your history is extremely sensitive.** The API has **no authentication and no TLS**. Keep its default loopback binding (`127.0.0.1`). Binding a non-loopback address requires `--allow-remote` and still leaves the API unprotected — never expose it to your LAN, the internet, a reverse proxy, or untrusted users.
 
 Search uses SQLite FTS5 for token-prefix matching, with a `LIKE` fallback for literal text. It is designed for inspection, not semantic or embedding-based retrieval.
 
@@ -205,7 +244,9 @@ Context resolution:
 - Inactive messages and inactive conversations are not context neighbors.
 
 > [!IMPORTANT]
-> Do not import into a database while `recall serve`, another import, or an export is using that same file. SQLite permits only one writer and this alpha does not coordinate concurrent operations or configure retry handling for lock contention.
+> Concurrent use of one database file is **unsupported**. Do not run `import` while `serve`, `browse`, another `import`, or an export is using the same file. SQLite allows only one writer; this alpha does not coordinate processes or set a busy timeout.
+>
+> Measured spike (`tests/sqlite_concurrency.rs`, PR-H5): RecallEngine keeps the default **DELETE/rollback** journal (**Outcome A**). WAL can let writers finish while a long-lived reader holds a snapshot, but it does not make concurrent import+serve safe or consistent (uncommitted import rows stay invisible; two writers still contend), and it adds `-wal`/`-shm` sidecars that break simple backups and read-only distribution. `serve` / `browse` open the database read-only and must not change journal mode.
 
 ## Logging and diagnostics
 
@@ -218,7 +259,7 @@ ChatGPT exports and the databases created by RecallEngine can contain personal i
 - Keep exports, databases, generated reports, assets, and screenshots outside this repository.
 - Never commit or paste real conversation data into an issue, pull request, log, or public service.
 - Use only anonymized, minimal fixtures when contributing tests.
-- Do not change the API host away from `127.0.0.1` unless you fully understand the exposure and provide the required protections yourself.
+- Do not change the API host away from `127.0.0.1` unless you fully understand the exposure, pass `--allow-remote`, and provide the required protections yourself.
 
 The repository ignores local `export/` and `docs/` work directories as a safety measure; generated data should stay outside the clone in any case.
 

@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use crate::domain::canonical::ParsedFragment;
 use crate::domain::ic::{existing_ic_map, max_ic_in_db, message_count, prepare_ic_batch};
+use crate::domain::projections::{count_active, count_all};
 use crate::error::{RecallError, Result};
 use crate::import::assets::build_asset_id;
 use crate::import::chatgpt::{
@@ -22,6 +23,7 @@ use crate::import::ExportLayout;
 use crate::storage::sqlite::{
     AssetUpsert, Database, FeedbackUpsert, ImportIssue, LibraryFileUpsert, SharedUpsert,
 };
+use crate::storage::{CountableTable, SidecarTable};
 
 struct AssetImportOptions<'a> {
     mode: AssetMode,
@@ -219,6 +221,7 @@ pub fn run_chatgpt_import(
                 }
             };
             let sp = format!("sp_{}", frag.shard_index);
+            // Trusted savepoint name: shard_index is an internal integer, not user input.
             let _ = conn.execute_batch(&format!("SAVEPOINT {sp};"));
             if let Err(e) = write_fragment(&db, &run_id, &frag, &ic_batch.assignments)
                 .and_then(|_| {
@@ -568,7 +571,7 @@ fn import_feedback(
             raw_json: &item.to_string(),
         })?;
     }
-    db.reconcile_sidecar(run_id, &rel, "feedback")?;
+    db.reconcile_sidecar(run_id, &rel, SidecarTable::Feedback)?;
     Ok(())
 }
 
@@ -609,7 +612,7 @@ fn import_shared(
             raw_json: &item.to_string(),
         })?;
     }
-    db.reconcile_sidecar(run_id, &rel, "shared_conversations")?;
+    db.reconcile_sidecar(run_id, &rel, SidecarTable::SharedConversations)?;
     Ok(())
 }
 
@@ -642,7 +645,7 @@ fn import_library(
             raw_json: &item.to_string(),
         })?;
     }
-    db.reconcile_sidecar(run_id, &rel, "library_files")?;
+    db.reconcile_sidecar(run_id, &rel, SidecarTable::LibraryFiles)?;
     Ok(())
 }
 
@@ -661,9 +664,9 @@ fn compute_stats(
         }));
     }
 
-    let conversations = count_active(conn, "conversations")?;
-    let nodes = count_active(conn, "nodes")?;
-    let messages = count_active(conn, "messages")?;
+    let conversations = count_active(conn, CountableTable::Conversations)?;
+    let nodes = count_active(conn, CountableTable::Nodes)?;
+    let messages = count_active(conn, CountableTable::Messages)?;
     let assistant = count_role(conn, "assistant")?;
     let user = count_role(conn, "user")?;
     let branching = branching_conversations(conn)?;
@@ -672,10 +675,10 @@ fn compute_stats(
     let mapped_assets = count_mapped_assets(conn)?;
     let unresolved_assets = count_unresolved_assets(conn)?;
     let attachments = count_message_assets(conn)?;
-    let content_references = count_all(conn, "content_references")?;
-    let feedback = count_active(conn, "feedback")?;
-    let shared_conversations = count_active(conn, "shared_conversations")?;
-    let library_files = count_active(conn, "library_files")?;
+    let content_references = count_all(conn, CountableTable::ContentReferences)?;
+    let feedback = count_active(conn, CountableTable::Feedback)?;
+    let shared_conversations = count_active(conn, CountableTable::SharedConversations)?;
+    let library_files = count_active(conn, CountableTable::LibraryFiles)?;
 
     Ok(json!({
         "committed": true,
@@ -698,16 +701,6 @@ fn compute_stats(
         "legacy_ic_missing": ic_batch.legacy_ic_missing,
         "legacy_ic_conflicts": ic_batch.legacy_ic_conflicts,
     }))
-}
-
-fn count_active(conn: &rusqlite::Connection, table: &str) -> Result<i64> {
-    let sql = format!("SELECT COUNT(*) FROM {table} WHERE is_active = 1");
-    Ok(conn.query_row(&sql, [], |r| r.get(0))?)
-}
-
-fn count_all(conn: &rusqlite::Connection, table: &str) -> Result<i64> {
-    let sql = format!("SELECT COUNT(*) FROM {table}");
-    Ok(conn.query_row(&sql, [], |r| r.get(0))?)
 }
 
 fn count_role(conn: &rusqlite::Connection, role: &str) -> Result<i64> {

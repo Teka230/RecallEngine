@@ -74,7 +74,8 @@ fn legacy_export_reads_ic_without_recalc() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chatgpt-sanitized");
     run_chatgpt_import(fixture, db.clone(), AssetMode::External, None, false, None).unwrap();
 
-    recall_engine::commands::export::run_legacy_sqlite(db.clone(), out.clone()).unwrap();
+    recall_engine::commands::export::legacy_sqlite::run_legacy_sqlite(db.clone(), out.clone())
+        .unwrap();
 
     let database = Database::open(&db).unwrap();
     let conn = database.connection();
