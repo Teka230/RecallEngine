@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::cli::BundleFormat;
 use crate::error::Result;
 use crate::export::bundles::planner::BundlePlanner;
 use crate::export::bundles::profile::BundleProfile;
@@ -13,7 +14,8 @@ pub fn run_bundle(
     db_path: PathBuf,
     out_path: PathBuf,
     profile_name: String,
-    format: String,
+    format: BundleFormat,
+    force: bool,
 ) -> Result<()> {
     tracing::info!(
         "Starting bundle export to {:?} with profile '{}'",
@@ -77,12 +79,15 @@ pub fn run_bundle(
     }
 
     let writer = BundleWriter::new(&renderer);
-    if format.to_lowercase() == "zip" {
-        tracing::info!("Writing zip to {:?}...", out_path);
-        writer.write_zip(&plan, &ref_map, &out_path)?;
-    } else {
-        tracing::info!("Writing directory to {:?}...", out_path);
-        writer.write_directory(&plan, &ref_map, &out_path)?;
+    match format {
+        BundleFormat::Zip => {
+            tracing::info!("Writing zip to {:?}...", out_path);
+            writer.write_zip(&plan, &ref_map, &out_path, force)?;
+        }
+        BundleFormat::Directory => {
+            tracing::info!("Writing directory to {:?}...", out_path);
+            writer.write_directory(&plan, &ref_map, &out_path, force)?;
+        }
     }
 
     tracing::info!("Bundle export completed successfully.");

@@ -158,9 +158,19 @@ pub enum ExportTarget {
         out: Option<PathBuf>,
         #[arg(long, default_value = "notebooklm")]
         profile: String,
-        #[arg(long, default_value = "dir")]
-        format: String,
+        #[arg(long, value_enum, default_value_t = BundleFormat::Directory)]
+        format: BundleFormat,
+        /// Replace an existing destination instead of refusing to overwrite it.
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum BundleFormat {
+    #[value(alias = "dir")]
+    Directory,
+    Zip,
 }
 
 #[cfg(test)]
@@ -202,5 +212,36 @@ mod tests {
             "message-42",
         ])
         .is_err());
+    }
+
+    #[test]
+    fn bundle_accepts_force_and_format_aliases() {
+        let parsed = Cli::try_parse_from([
+            "recall", "export", "bundle", "--db", "x.sqlite", "--format", "dir", "--force",
+        ])
+        .expect("bundle parse");
+        match parsed.command {
+            super::Commands::Export {
+                target: super::ExportTarget::Bundle { format, force, .. },
+            } => {
+                assert_eq!(format, super::BundleFormat::Directory);
+                assert!(force);
+            }
+            _ => panic!("expected export bundle"),
+        }
+
+        let zip = Cli::try_parse_from([
+            "recall", "export", "bundle", "--db", "x.sqlite", "--format", "zip",
+        ])
+        .expect("zip parse");
+        match zip.command {
+            super::Commands::Export {
+                target: super::ExportTarget::Bundle { format, force, .. },
+            } => {
+                assert_eq!(format, super::BundleFormat::Zip);
+                assert!(!force);
+            }
+            _ => panic!("expected export bundle"),
+        }
     }
 }

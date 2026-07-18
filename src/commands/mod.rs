@@ -82,10 +82,11 @@ pub fn run(cli: Cli) -> Result<()> {
                 out,
                 profile,
                 format,
+                force,
             } => {
                 let out = out
                     .unwrap_or_else(|| db.parent().unwrap().join(format!("exports/{}", profile)));
-                export::bundles::run_bundle(db, out, profile, format)
+                export::bundles::run_bundle(db, out, profile, format, force)
             }
         },
         Commands::Search {
