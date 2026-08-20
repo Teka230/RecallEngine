@@ -142,6 +142,9 @@ pub enum ExportTarget {
         db: PathBuf,
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Projection scope for branched conversations.
+        #[arg(long, value_enum, default_value_t = LegacyBranchMode::AllActive)]
+        branch_mode: LegacyBranchMode,
     },
     Markdown {
         #[arg(long)]
@@ -164,6 +167,14 @@ pub enum ExportTarget {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum LegacyBranchMode {
+    /// Export every active message, including alternate branches.
+    AllActive,
+    /// Export the current selected thread for each conversation.
+    Current,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]

@@ -7,7 +7,7 @@ pub mod show;
 pub mod stats;
 pub mod verify;
 
-use crate::cli::{Cli, Commands, ExportTarget, ImportTarget};
+use crate::cli::{Cli, Commands, ExportTarget, ImportTarget, LegacyBranchMode};
 use crate::error::Result;
 
 pub fn run(cli: Cli) -> Result<()> {
@@ -68,10 +68,22 @@ pub fn run(cli: Cli) -> Result<()> {
             allow_remote,
         } => serve::run(db, assets_dir, host, port, allow_remote),
         Commands::Export { target } => match target {
-            ExportTarget::LegacySqlite { db, output } => {
+            ExportTarget::LegacySqlite {
+                db,
+                output,
+                branch_mode,
+            } => {
                 let out =
                     output.unwrap_or_else(|| db.parent().unwrap().join("exports/legacy.sqlite"));
-                export::legacy_sqlite::run_legacy_sqlite(db, out)
+                let scope = match branch_mode {
+                    LegacyBranchMode::AllActive => {
+                        crate::export::legacy::LegacyExportScope::AllActive
+                    }
+                    LegacyBranchMode::Current => {
+                        crate::export::legacy::LegacyExportScope::CurrentThread
+                    }
+                };
+                export::legacy_sqlite::run_legacy_sqlite(db, out, scope)
             }
             ExportTarget::Markdown { db, ic, out } => {
                 let out = out.unwrap_or_else(|| db.parent().unwrap().join("exports/markdown"));
