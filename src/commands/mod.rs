@@ -7,6 +7,7 @@ pub mod serve;
 pub mod show;
 pub mod stats;
 pub mod verify;
+pub mod web_ui;
 
 use crate::cli::{Cli, Commands, ExportTarget, ImportTarget, LegacyBranchMode};
 use crate::error::Result;
@@ -67,7 +68,7 @@ pub fn run(cli: Cli) -> Result<()> {
             host,
             port,
             allow_remote,
-        } => serve::run(db, assets_dir, host, port, allow_remote),
+        } => web_ui::run(db, assets_dir, host, port, allow_remote),
         Commands::Export { target } => match target {
             ExportTarget::LegacySqlite {
                 db,
