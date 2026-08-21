@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::domain::reference::{
     get_active_message_by_ic, get_active_message_by_id, get_ic_context, is_reference_role,
@@ -18,7 +19,9 @@ pub struct ConversationListItem {
     pub updated_at: Option<f64>,
     pub message_count: i64,
     pub excerpt: String,
+    pub default_model_slug: Option<String>,
     pub has_branches: bool,
+    pub sort_time: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +29,10 @@ pub struct ConversationMeta {
     pub id: String,
     pub title: String,
     pub current_node_id: Option<String>,
+    pub updated_at: Option<f64>,
+    pub default_model_slug: Option<String>,
+    pub message_count: i64,
+    pub has_branches: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +49,7 @@ pub struct MessageView {
     pub parent_node_id: Option<String>,
     pub conversation_id: String,
     pub role: String,
+    pub model_slug: Option<String>,
     pub content: String,
     pub created_at: Option<f64>,
     pub timestamp: Option<String>,
@@ -60,6 +68,9 @@ pub struct SearchHit {
     pub message_id: String,
     pub ic: Option<i64>,
     pub role: String,
+    pub model_slug: Option<String>,
+    pub node_id: String,
+    pub parent_node_id: Option<String>,
     pub excerpt: String,
     pub created_at: Option<f64>,
     pub timestamp: Option<String>,
@@ -103,6 +114,45 @@ pub struct AssetListItem {
     pub conversation_title: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageViewMode {
+    CurrentThread,
+    AllActive,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadPage<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageWindow {
+    pub center: MessageView,
+    pub before: Vec<MessageView>,
+    pub after: Vec<MessageView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ConversationCursor {
+    sort_time: f64,
+    id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MessageCursor {
+    view: String,
+    ic: Option<i64>,
+    depth: Option<i64>,
+    node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SearchCursor {
+    created_at: f64,
+    message_id: String,
+}
+
 pub struct ReadRepository {
     conn: Connection,
 }
@@ -122,7 +172,15 @@ impl ReadRepository {
     }
 
     fn validate_schema(&self) -> Result<()> {
-        for table in ["conversations", "nodes", "messages", "content_blocks"] {
+        for table in [
+            "import_runs",
+            "conversations",
+            "nodes",
+            "messages",
+            "content_blocks",
+            "conversations_fts",
+            "recall_engine_migrations",
+        ] {
             let exists: i64 = self.conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
                 [table],
@@ -132,14 +190,14 @@ impl ReadRepository {
                 return Err(RecallError::msg("Unsupported RecallEngine database schema"));
             }
         }
-        let has_ic = self
+        let columns = self
             .conn
             .prepare("PRAGMA table_info(messages)")?
             .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<std::result::Result<Vec<_>, _>>()?
-            .iter()
-            .any(|column| column == "ic");
-        if !has_ic {
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if !columns.iter().any(|column| column == "ic")
+            || !columns.iter().any(|column| column == "model_slug")
+        {
             return Err(RecallError::msg("Unsupported RecallEngine database schema"));
         }
         Ok(())
@@ -186,7 +244,9 @@ impl ReadRepository {
                       WHERE branch_nodes.conversation_id = c.id AND branch_nodes.is_active = 1
                         AND branch_nodes.parent_id IS NOT NULL
                       GROUP BY branch_nodes.parent_id HAVING COUNT(*) > 1
-                    )
+                    ),
+                    c.default_model_slug,
+                    COALESCE(c.update_time, c.create_time, 0)
              FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id AND m.is_active = 1
              WHERE c.is_active = 1 AND (?1 = '' OR c.title LIKE ?2
                OR (?4 <> '' AND EXISTS (SELECT 1 FROM conversations_fts fts WHERE fts.rowid = c.rowid AND fts.conversations_fts MATCH ?4))
@@ -205,6 +265,8 @@ impl ReadRepository {
                     message_count: row.get(3)?,
                     excerpt: row.get(4)?,
                     has_branches: row.get::<_, i64>(5)? != 0,
+                    default_model_slug: row.get(6)?,
+                    sort_time: row.get(7)?,
                 })
             })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -237,14 +299,29 @@ impl ReadRepository {
     pub fn conversation_meta(&self, id: &str) -> Result<Option<ConversationMeta>> {
         self.conn
             .query_row(
-                "SELECT id, COALESCE(title, 'Untitled'), current_node_id
-                 FROM conversations WHERE id = ?1 AND is_active = 1",
+                "SELECT c.id, COALESCE(c.title, 'Untitled'), c.current_node_id,
+                        c.update_time, c.default_model_slug, COUNT(m.id),
+                        EXISTS(
+                          SELECT 1 FROM nodes branch_nodes
+                          WHERE branch_nodes.conversation_id = c.id
+                            AND branch_nodes.is_active = 1
+                            AND branch_nodes.parent_id IS NOT NULL
+                          GROUP BY branch_nodes.parent_id HAVING COUNT(*) > 1
+                        )
+                 FROM conversations c
+                 LEFT JOIN messages m ON m.conversation_id = c.id AND m.is_active = 1
+                 WHERE c.id = ?1 AND c.is_active = 1
+                 GROUP BY c.id",
                 [id],
                 |row| {
                     Ok(ConversationMeta {
                         id: row.get(0)?,
                         title: row.get(1)?,
                         current_node_id: row.get(2)?,
+                        updated_at: row.get(3)?,
+                        default_model_slug: row.get(4)?,
+                        message_count: row.get(5)?,
+                        has_branches: row.get::<_, i64>(6)? != 0,
                     })
                 },
             )
@@ -285,7 +362,7 @@ impl ReadRepository {
              )
              SELECT m.id,
                     CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
-                    n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'),
+                    n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'), m.model_slug,
                     COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
                         SELECT cb.text_content FROM content_blocks cb
                         WHERE cb.message_id = m.id ORDER BY cb.ordinal
@@ -304,7 +381,7 @@ impl ReadRepository {
         let mut statement = self.conn.prepare(&format!(
             "SELECT m.id,
                     CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
-                    n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'),
+                    n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'), m.model_slug,
                     COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
                         SELECT cb.text_content FROM content_blocks cb
                         WHERE cb.message_id = m.id ORDER BY cb.ordinal
@@ -322,7 +399,7 @@ impl ReadRepository {
         let mut statement = self.conn.prepare(&format!(
             "SELECT m.id,
                     CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
-                    n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'),
+                    n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'), m.model_slug,
                     COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
                         SELECT cb.text_content FROM content_blocks cb
                         WHERE cb.message_id = m.id ORDER BY cb.ordinal
@@ -334,6 +411,167 @@ impl ReadRepository {
         ))?;
         let rows = statement.query_map([conversation_id], map_message_view)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn message_page(
+        &self,
+        conversation_id: &str,
+        mode: MessageViewMode,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<ReadPage<MessageView>> {
+        let cursor = decode_cursor::<MessageCursor>(cursor)?;
+        if let Some(cursor) = &cursor {
+            if cursor.view != mode.as_str() {
+                return Err(RecallError::msg(
+                    "invalid cursor for requested message view",
+                ));
+            }
+        }
+        let page_limit = limit.min(500);
+        if page_limit == 0 {
+            return Ok(ReadPage {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        let query_limit = i64::try_from(page_limit + 1).unwrap_or(501);
+        match mode {
+            MessageViewMode::AllActive => {
+                let cursor_ic = cursor.as_ref().and_then(|value| value.ic);
+                let mut statement = self.conn.prepare(&format!(
+                    "SELECT m.id,
+                            CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
+                            n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'), m.model_slug,
+                            COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
+                                SELECT cb.text_content FROM content_blocks cb
+                                WHERE cb.message_id = m.id ORDER BY cb.ordinal
+                            )), ''),
+                            m.create_time, m.timestamp, m.ic
+                     FROM messages m JOIN nodes n ON n.id = m.node_id
+                     WHERE m.conversation_id = ?1 AND m.is_active = 1 AND n.is_active = 1
+                       AND (?2 IS NULL OR m.ic > ?2)
+                     ORDER BY m.ic ASC, m.id ASC LIMIT ?3"
+                ))?;
+                let rows = statement.query_map(
+                    params![conversation_id, cursor_ic, query_limit],
+                    |row| {
+                        let message = map_message_view(row)?;
+                        let sort_ic = row.get(10)?;
+                        Ok((message, sort_ic))
+                    },
+                )?;
+                let mut rows = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+                let has_more = rows.len() > page_limit;
+                if has_more {
+                    rows.truncate(page_limit);
+                }
+                let next_cursor = has_more
+                    .then(|| rows.last())
+                    .flatten()
+                    .map(|(_, sort_ic)| {
+                        encode_cursor(&MessageCursor {
+                            view: mode.as_str().to_string(),
+                            ic: Some(*sort_ic),
+                            depth: None,
+                            node_id: None,
+                        })
+                    })
+                    .transpose()?;
+                Ok(ReadPage {
+                    items: rows.into_iter().map(|(message, _)| message).collect(),
+                    next_cursor,
+                })
+            }
+            MessageViewMode::CurrentThread => {
+                let Some(meta) = self.conversation_meta(conversation_id)? else {
+                    return Ok(ReadPage {
+                        items: Vec::new(),
+                        next_cursor: None,
+                    });
+                };
+                let Some(current_node_id) = meta.current_node_id else {
+                    let all_active_cursor = cursor
+                        .as_ref()
+                        .map(|value| {
+                            encode_cursor(&MessageCursor {
+                                view: MessageViewMode::AllActive.as_str().to_string(),
+                                ic: value.ic,
+                                depth: None,
+                                node_id: None,
+                            })
+                        })
+                        .transpose()?;
+                    let mut page = self.message_page(
+                        conversation_id,
+                        MessageViewMode::AllActive,
+                        page_limit,
+                        all_active_cursor.as_deref(),
+                    )?;
+                    if let Some(next_cursor) = page.next_cursor.take() {
+                        let mut decoded = decode_cursor::<MessageCursor>(Some(&next_cursor))?
+                            .ok_or_else(|| RecallError::msg("invalid empty message cursor"))?;
+                        decoded.view = MessageViewMode::CurrentThread.as_str().to_string();
+                        page.next_cursor = Some(encode_cursor(&decoded)?);
+                    }
+                    return Ok(page);
+                };
+                let cursor_depth = cursor.as_ref().and_then(|value| value.depth);
+                let cursor_node_id = cursor.as_ref().and_then(|value| value.node_id.as_deref());
+                let mut statement = self.conn.prepare(&format!(
+                    "WITH RECURSIVE path(id, parent_id, depth) AS (
+                         SELECT id, parent_id, 0 FROM nodes WHERE id = ?1 AND is_active = 1
+                         UNION ALL
+                         SELECT n.id, n.parent_id, path.depth + 1
+                         FROM nodes n JOIN path ON path.parent_id = n.id
+                         WHERE n.is_active = 1
+                     )
+                     SELECT m.id,
+                            CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
+                            n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'), m.model_slug,
+                            COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
+                                SELECT cb.text_content FROM content_blocks cb
+                                WHERE cb.message_id = m.id ORDER BY cb.ordinal
+                            )), ''),
+                            m.create_time, m.timestamp, p.depth, n.id
+                     FROM path p JOIN nodes n ON n.id = p.id
+                     JOIN messages m ON m.node_id = n.id AND m.is_active = 1
+                     WHERE (?2 IS NULL OR p.depth < ?2
+                       OR (p.depth = ?2 AND n.id > ?3))
+                     ORDER BY p.depth DESC, n.id ASC LIMIT ?4"
+                ))?;
+                let rows = statement.query_map(
+                    params![current_node_id, cursor_depth, cursor_node_id, query_limit],
+                    |row| {
+                        let message = map_message_view(row)?;
+                        let depth: i64 = row.get(10)?;
+                        let node_id: String = row.get(11)?;
+                        Ok((message, depth, node_id))
+                    },
+                )?;
+                let mut rows = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+                let has_more = rows.len() > page_limit;
+                if has_more {
+                    rows.truncate(page_limit);
+                }
+                let next_cursor = has_more
+                    .then(|| rows.last())
+                    .flatten()
+                    .map(|(_, depth, node_id)| {
+                        encode_cursor(&MessageCursor {
+                            view: mode.as_str().to_string(),
+                            ic: None,
+                            depth: Some(*depth),
+                            node_id: Some(node_id.clone()),
+                        })
+                    })
+                    .transpose()?;
+                Ok(ReadPage {
+                    items: rows.into_iter().map(|(message, _, _)| message).collect(),
+                    next_cursor,
+                })
+            }
+        }
     }
 
     pub fn search(&self, term: &str, limit: usize) -> Result<Vec<SearchHit>> {
@@ -349,9 +587,11 @@ impl ReadRepository {
         let fts_sql = format!(
             "SELECT m.conversation_id, COALESCE(c.title, 'Untitled'), m.id,
                     CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
-                    COALESCE(m.role, 'unknown'), cb.text_content, m.create_time, m.timestamp
+                    COALESCE(m.role, 'unknown'), m.model_slug, n.id, n.parent_id,
+                    cb.text_content, m.create_time, m.timestamp
              FROM content_blocks cb JOIN content_blocks_fts fts ON cb.rowid = fts.rowid
              JOIN messages m ON m.id = cb.message_id
+             JOIN nodes n ON n.id = m.node_id
              JOIN conversations c ON c.id = m.conversation_id
              WHERE c.is_active = 1 AND m.is_active = 1
                AND fts.content_blocks_fts MATCH ?1
@@ -365,9 +605,12 @@ impl ReadRepository {
                 message_id: row.get(2)?,
                 ic: row.get(3)?,
                 role: row.get(4)?,
-                excerpt: row.get(5)?,
-                created_at: row.get(6)?,
-                timestamp: row.get(7)?,
+                model_slug: row.get(5)?,
+                node_id: row.get(6)?,
+                parent_node_id: row.get(7)?,
+                excerpt: row.get(8)?,
+                created_at: row.get(9)?,
+                timestamp: row.get(10)?,
             })
         })?;
         let hits = rows.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -379,8 +622,10 @@ impl ReadRepository {
         let like_sql = format!(
             "SELECT m.conversation_id, COALESCE(c.title, 'Untitled'), m.id,
                     CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
-                    COALESCE(m.role, 'unknown'), cb.text_content, m.create_time, m.timestamp
+                    COALESCE(m.role, 'unknown'), m.model_slug, n.id, n.parent_id,
+                    cb.text_content, m.create_time, m.timestamp
              FROM content_blocks cb JOIN messages m ON m.id = cb.message_id
+             JOIN nodes n ON n.id = m.node_id
              JOIN conversations c ON c.id = m.conversation_id
              WHERE c.is_active = 1 AND m.is_active = 1 AND cb.text_content LIKE ?1
              ORDER BY COALESCE(m.create_time, 0) DESC, m.id, cb.ordinal ASC LIMIT ?2"
@@ -393,12 +638,201 @@ impl ReadRepository {
                 message_id: row.get(2)?,
                 ic: row.get(3)?,
                 role: row.get(4)?,
-                excerpt: row.get(5)?,
-                created_at: row.get(6)?,
-                timestamp: row.get(7)?,
+                model_slug: row.get(5)?,
+                node_id: row.get(6)?,
+                parent_node_id: row.get(7)?,
+                excerpt: row.get(8)?,
+                created_at: row.get(9)?,
+                timestamp: row.get(10)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn search_page(
+        &self,
+        term: &str,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<ReadPage<SearchHit>> {
+        let cursor = decode_cursor::<SearchCursor>(cursor)?;
+        let term = term.trim();
+        let fts_query = sanitize_fts_query(term);
+        let page_limit = limit.min(500);
+        if term.is_empty() || fts_query.is_empty() || page_limit == 0 {
+            return Ok(ReadPage {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        let query_limit = i64::try_from(page_limit + 1).unwrap_or(501);
+        let cursor_time = cursor.as_ref().map(|value| value.created_at);
+        let cursor_message_id = cursor.as_ref().map(|value| value.message_id.as_str());
+        let fts_sql = format!(
+            "SELECT m.conversation_id, COALESCE(c.title, 'Untitled'), m.id,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
+                    COALESCE(m.role, 'unknown'), m.model_slug, n.id, n.parent_id,
+                    COALESCE((SELECT cb2.text_content
+                              FROM content_blocks cb2
+                              JOIN content_blocks_fts fts2 ON cb2.rowid = fts2.rowid
+                              WHERE cb2.message_id = m.id AND fts2.content_blocks_fts MATCH ?1
+                              ORDER BY cb2.ordinal LIMIT 1), ''),
+                    m.create_time, m.timestamp
+             FROM messages m JOIN nodes n ON n.id = m.node_id
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE c.is_active = 1 AND m.is_active = 1
+               AND EXISTS (
+                 SELECT 1 FROM content_blocks cb
+                 JOIN content_blocks_fts fts ON cb.rowid = fts.rowid
+                 WHERE cb.message_id = m.id AND fts.content_blocks_fts MATCH ?1
+               )
+               AND (?3 IS NULL OR COALESCE(m.create_time, 0) < ?3
+                 OR (COALESCE(m.create_time, 0) = ?3 AND m.id > ?4))
+             ORDER BY COALESCE(m.create_time, 0) DESC, m.id ASC LIMIT ?2"
+        );
+        let mut statement = self.conn.prepare(&fts_sql)?;
+        let mut rows = statement
+            .query_map(
+                params![fts_query, query_limit, cursor_time, cursor_message_id],
+                map_search_hit,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if rows.is_empty() {
+            let pattern = format!("%{term}%");
+            let like_sql = format!(
+                "SELECT m.conversation_id, COALESCE(c.title, 'Untitled'), m.id,
+                        CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
+                        COALESCE(m.role, 'unknown'), m.model_slug, n.id, n.parent_id,
+                        COALESCE((SELECT cb2.text_content FROM content_blocks cb2
+                                  WHERE cb2.message_id = m.id AND cb2.text_content LIKE ?1
+                                  ORDER BY cb2.ordinal LIMIT 1), ''),
+                        m.create_time, m.timestamp
+                 FROM messages m JOIN nodes n ON n.id = m.node_id
+                 JOIN conversations c ON c.id = m.conversation_id
+                 WHERE c.is_active = 1 AND m.is_active = 1
+                   AND EXISTS (
+                     SELECT 1 FROM content_blocks cb
+                     WHERE cb.message_id = m.id AND cb.text_content LIKE ?1
+                   )
+                   AND (?3 IS NULL OR COALESCE(m.create_time, 0) < ?3
+                     OR (COALESCE(m.create_time, 0) = ?3 AND m.id > ?4))
+                 ORDER BY COALESCE(m.create_time, 0) DESC, m.id ASC LIMIT ?2"
+            );
+            let mut statement = self.conn.prepare(&like_sql)?;
+            rows = statement
+                .query_map(
+                    params![pattern, query_limit, cursor_time, cursor_message_id],
+                    map_search_hit,
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+        }
+        let has_more = rows.len() > page_limit;
+        if has_more {
+            rows.truncate(page_limit);
+        }
+        let next_cursor = has_more
+            .then(|| rows.last())
+            .flatten()
+            .map(|hit| {
+                encode_cursor(&SearchCursor {
+                    created_at: hit.created_at.unwrap_or(0.0),
+                    message_id: hit.message_id.clone(),
+                })
+            })
+            .transpose()?;
+        Ok(ReadPage {
+            items: rows,
+            next_cursor,
+        })
+    }
+
+    pub fn list_conversations_cursor(
+        &self,
+        term: &str,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<ReadPage<ConversationListItem>> {
+        let cursor = decode_cursor::<ConversationCursor>(cursor)?;
+        let page_limit = limit.min(500);
+        if page_limit == 0 {
+            return Ok(ReadPage {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        let term = term.trim();
+        let pattern = format!("%{term}%");
+        let fts_query = sanitize_fts_query(term);
+        let query_limit = i64::try_from(page_limit + 1).unwrap_or(501);
+        let cursor_time = cursor.as_ref().map(|value| value.sort_time);
+        let cursor_id = cursor.as_ref().map(|value| value.id.as_str());
+        let mut statement = self.conn.prepare(
+            "SELECT c.id, COALESCE(c.title, 'Untitled'), c.update_time,
+                    COUNT(m.id),
+                    COALESCE((SELECT cb.text_content
+                      FROM messages lm JOIN content_blocks cb ON cb.message_id = lm.id
+                      WHERE lm.conversation_id = c.id AND lm.is_active = 1 AND cb.text_content IS NOT NULL
+                      ORDER BY COALESCE(lm.create_time, 0) DESC, cb.ordinal LIMIT 1), ''),
+                    c.default_model_slug,
+                    EXISTS(
+                      SELECT 1 FROM nodes branch_nodes
+                      WHERE branch_nodes.conversation_id = c.id AND branch_nodes.is_active = 1
+                        AND branch_nodes.parent_id IS NOT NULL
+                      GROUP BY branch_nodes.parent_id HAVING COUNT(*) > 1
+                    ),
+                    COALESCE(c.update_time, c.create_time, 0)
+             FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id AND m.is_active = 1
+             WHERE c.is_active = 1 AND (?1 = '' OR c.title LIKE ?2
+               OR (?4 <> '' AND EXISTS (SELECT 1 FROM conversations_fts fts WHERE fts.rowid = c.rowid AND fts.conversations_fts MATCH ?4))
+               OR EXISTS (
+                 SELECT 1 FROM messages sm JOIN content_blocks sb ON sb.message_id = sm.id
+                 WHERE sm.conversation_id = c.id AND sm.is_active = 1 AND sb.text_content LIKE ?2
+               ))
+               AND (?6 IS NULL OR COALESCE(c.update_time, c.create_time, 0) < ?6
+                 OR (COALESCE(c.update_time, c.create_time, 0) = ?6 AND c.id > ?7))
+             GROUP BY c.id
+             ORDER BY COALESCE(c.update_time, c.create_time, 0) DESC, c.id ASC
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            params![
+                term,
+                pattern,
+                query_limit,
+                fts_query,
+                cursor_time,
+                cursor_time,
+                cursor_id,
+            ],
+            |row| {
+                Ok(ConversationListItem {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    updated_at: row.get(2)?,
+                    message_count: row.get(3)?,
+                    excerpt: row.get(4)?,
+                    default_model_slug: row.get(5)?,
+                    has_branches: row.get::<_, i64>(6)? != 0,
+                    sort_time: row.get(7)?,
+                })
+            },
+        )?;
+        let mut items = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        let has_more = items.len() > page_limit;
+        if has_more {
+            items.truncate(page_limit);
+        }
+        let next_cursor = has_more
+            .then(|| items.last())
+            .flatten()
+            .map(|item| {
+                encode_cursor(&ConversationCursor {
+                    sort_time: item.sort_time,
+                    id: item.id.clone(),
+                })
+            })
+            .transpose()?;
+        Ok(ReadPage { items, next_cursor })
     }
 
     pub fn resolve_ic_jump(&self, ic: i64) -> Result<Option<IcJumpTarget>> {
@@ -432,7 +866,7 @@ impl ReadRepository {
             return Ok(None);
         }
         let mut statement = self.conn.prepare(&format!(
-            "SELECT m.id, m.ic, n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'),
+            "SELECT m.id, m.ic, n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'), m.model_slug,
                     COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
                         SELECT cb.text_content FROM content_blocks cb
                         WHERE cb.message_id = m.id ORDER BY cb.ordinal
@@ -444,6 +878,26 @@ impl ReadRepository {
         ))?;
         statement
             .query_row([ic], map_message_view)
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn message_by_id(&self, message_id: &str) -> Result<Option<MessageView>> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT m.id,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
+                    n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'), m.model_slug,
+                    COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
+                        SELECT cb.text_content FROM content_blocks cb
+                        WHERE cb.message_id = m.id ORDER BY cb.ordinal
+                    )), ''), m.create_time, m.timestamp
+             FROM messages m JOIN nodes n ON n.id = m.node_id
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE m.id = ?1 AND m.is_active = 1 AND n.is_active = 1 AND c.is_active = 1
+             LIMIT 1"
+        ))?;
+        statement
+            .query_row([message_id], map_message_view)
             .optional()
             .map_err(Into::into)
     }
@@ -499,6 +953,125 @@ impl ReadRepository {
         scope: ContextScope,
     ) -> Result<Option<IcContext>> {
         get_ic_context(&self.conn, ic, before, after, scope)
+    }
+
+    pub fn message_window(
+        &self,
+        message_id: &str,
+        before: usize,
+        after: usize,
+        mode: MessageViewMode,
+    ) -> Result<Option<MessageWindow>> {
+        let Some(target) = self.message_by_id(message_id)? else {
+            return Ok(None);
+        };
+        match mode {
+            MessageViewMode::AllActive => self.message_window_all_active(&target, before, after),
+            MessageViewMode::CurrentThread => {
+                let Some(meta) = self.conversation_meta(&target.conversation_id)? else {
+                    return Ok(None);
+                };
+                let Some(current_node_id) = meta.current_node_id else {
+                    return self.message_window_all_active(&target, before, after);
+                };
+                self.message_window_current_thread(&target, &current_node_id, before, after)
+            }
+        }
+    }
+
+    fn message_window_all_active(
+        &self,
+        target: &MessageView,
+        before: usize,
+        after: usize,
+    ) -> Result<Option<MessageWindow>> {
+        let before = i64::try_from(before).unwrap_or(50);
+        let after = i64::try_from(after).unwrap_or(50);
+        let mut statement = self.conn.prepare(&format!(
+            "WITH ordered AS (
+                 SELECT m.id,
+                        ROW_NUMBER() OVER (ORDER BY m.ic ASC, m.id ASC) AS position
+                 FROM messages m JOIN nodes n ON n.id = m.node_id
+                 WHERE m.conversation_id = ?1 AND m.is_active = 1 AND n.is_active = 1
+             ), target AS (
+                 SELECT position FROM ordered WHERE id = ?2
+             )
+             SELECT m.id,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
+                    n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'), m.model_slug,
+                    COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
+                        SELECT cb.text_content FROM content_blocks cb
+                        WHERE cb.message_id = m.id ORDER BY cb.ordinal
+                    )), ''), m.create_time, m.timestamp
+             FROM ordered o JOIN target t
+             JOIN messages m ON m.id = o.id
+             JOIN nodes n ON n.id = m.node_id
+             WHERE o.position BETWEEN t.position - ?3 AND t.position + ?4
+             ORDER BY o.position"
+        ))?;
+        let rows = statement.query_map(
+            params![target.conversation_id, target.id, before, after],
+            map_message_view,
+        )?;
+        split_window(target, rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    fn message_window_current_thread(
+        &self,
+        target: &MessageView,
+        current_node_id: &str,
+        before: usize,
+        after: usize,
+    ) -> Result<Option<MessageWindow>> {
+        let before = i64::try_from(before).unwrap_or(50);
+        let after = i64::try_from(after).unwrap_or(50);
+        let mut statement = self.conn.prepare(&format!(
+            "WITH RECURSIVE path(id, parent_id, depth) AS (
+                 SELECT id, parent_id, 0 FROM nodes WHERE id = ?1 AND is_active = 1
+                 UNION ALL
+                 SELECT n.id, n.parent_id, path.depth + 1
+                 FROM nodes n JOIN path ON path.parent_id = n.id
+                 WHERE n.is_active = 1
+             ), ordered AS (
+                 SELECT n.id AS node_id, m.id AS message_id,
+                        ROW_NUMBER() OVER (ORDER BY p.depth DESC, n.id ASC) AS position
+                 FROM path p JOIN nodes n ON n.id = p.id
+                 JOIN messages m ON m.node_id = n.id AND m.is_active = 1
+             ), target AS (
+                 SELECT position FROM ordered WHERE message_id = ?2
+             )
+             SELECT m.id,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
+                    n.id, n.parent_id, m.conversation_id, COALESCE(m.role, 'unknown'), m.model_slug,
+                    COALESCE((SELECT GROUP_CONCAT(text_content, char(10)) FROM (
+                        SELECT cb.text_content FROM content_blocks cb
+                        WHERE cb.message_id = m.id ORDER BY cb.ordinal
+                    )), ''), m.create_time, m.timestamp
+             FROM ordered o JOIN target t
+             JOIN messages m ON m.id = o.message_id
+             JOIN nodes n ON n.id = m.node_id
+             WHERE o.position BETWEEN t.position - ?3 AND t.position + ?4
+             ORDER BY o.position"
+        ))?;
+        let rows = statement.query_map(
+            params![current_node_id, target.id, before, after],
+            map_message_view,
+        )?;
+        split_window(target, rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn latest_snapshot_id(&self) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT id FROM import_runs
+                 WHERE status IN ('completed', 'partial') AND completed_at IS NOT NULL
+                 ORDER BY completed_at DESC, id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|id| id.map(|value: String| format!("import-run:{value}")))
+            .map_err(Into::into)
     }
 
     pub fn branches_for_parent(&self, parent_node_id: &str) -> Result<Vec<BranchChoice>> {
@@ -643,6 +1216,39 @@ impl ReadRepository {
     }
 }
 
+impl MessageViewMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentThread => "current-thread",
+            Self::AllActive => "all-active",
+        }
+    }
+}
+
+fn decode_cursor<T: DeserializeOwned>(cursor: Option<&str>) -> Result<Option<T>> {
+    cursor
+        .map(|value| {
+            serde_json::from_str(value)
+                .map_err(|error| RecallError::msg(format!("invalid cursor: {error}")))
+        })
+        .transpose()
+}
+
+fn encode_cursor<T: Serialize>(cursor: &T) -> Result<String> {
+    serde_json::to_string(cursor).map_err(Into::into)
+}
+
+fn split_window(target: &MessageView, messages: Vec<MessageView>) -> Result<Option<MessageWindow>> {
+    let Some(center_index) = messages.iter().position(|message| message.id == target.id) else {
+        return Ok(None);
+    };
+    Ok(Some(MessageWindow {
+        center: messages[center_index].clone(),
+        before: messages[..center_index].to_vec(),
+        after: messages[center_index + 1..].to_vec(),
+    }))
+}
+
 fn map_message_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageView> {
     Ok(MessageView {
         id: row.get(0)?,
@@ -651,9 +1257,26 @@ fn map_message_view(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageView> {
         parent_node_id: row.get(3)?,
         conversation_id: row.get(4)?,
         role: row.get(5)?,
-        content: row.get(6)?,
-        created_at: row.get(7)?,
-        timestamp: row.get(8)?,
+        model_slug: row.get(6)?,
+        content: row.get(7)?,
+        created_at: row.get(8)?,
+        timestamp: row.get(9)?,
+    })
+}
+
+fn map_search_hit(row: &rusqlite::Row<'_>) -> rusqlite::Result<SearchHit> {
+    Ok(SearchHit {
+        conversation_id: row.get(0)?,
+        conversation_title: row.get(1)?,
+        message_id: row.get(2)?,
+        ic: row.get(3)?,
+        role: row.get(4)?,
+        model_slug: row.get(5)?,
+        node_id: row.get(6)?,
+        parent_node_id: row.get(7)?,
+        excerpt: row.get(8)?,
+        created_at: row.get(9)?,
+        timestamp: row.get(10)?,
     })
 }
 

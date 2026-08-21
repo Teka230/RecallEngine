@@ -228,6 +228,12 @@ Binding outside loopback requires an explicit operator consent flag:
 | `GET /api/assets?q=&limit=` | List linked assets. |
 | `GET /api/assets/{id}/file` | Serve a locally copied or symlinked asset. |
 
+The versioned read contract for the future web UI is documented in
+[`READ-API-V1.md`](READ-API-V1.md). It is available under `/v1` and
+provides explicit snapshot metadata, cursor pagination, `current-thread` /
+`all-active` message views, context windows, search, and stable-reference
+resolution. The `/api` routes above remain the compatibility surface.
+
 > [!CAUTION]
 > **Your history is extremely sensitive.** The API has **no authentication and no TLS**. Keep its default loopback binding (`127.0.0.1`). Binding a non-loopback address requires `--allow-remote` and still leaves the API unprotected — never expose it to your LAN, the internet, a reverse proxy, or untrusted users.
 

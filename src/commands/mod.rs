@@ -1,6 +1,7 @@
 pub mod browse;
 pub mod export;
 pub mod import;
+pub(crate) mod read_api_v1;
 pub mod search;
 pub mod serve;
 pub mod show;

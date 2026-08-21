@@ -16,18 +16,18 @@ use axum::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use crate::commands::read_api_v1;
 use crate::domain::reference::{
     get_active_message_by_ic, get_active_message_by_id, get_ic_context, resolve_message_reference,
     ContextScope, IcContext, MessageReference, ReferencedMessage,
 };
 use crate::error::{RecallError, Result};
 use crate::read_model::ReadRepository;
-use crate::storage::Database;
 
 #[derive(Clone)]
-struct AppState {
-    db_path: Arc<PathBuf>,
-    assets_dir: Arc<PathBuf>,
+pub(crate) struct AppState {
+    pub(crate) db_path: Arc<PathBuf>,
+    pub(crate) assets_dir: Arc<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -153,8 +153,8 @@ pub fn run(
         );
     }
 
-    // Apply pending migrations before switching to the read-only API connection.
-    Database::open(&db_path)?;
+    // Validate the selected database without applying migrations or otherwise mutating it.
+    ReadRepository::open_read_only(&db_path)?;
     let addr = SocketAddr::new(host, port);
     tokio::runtime::Runtime::new()?.block_on(async move {
         let app = app(db_path, assets_dir);
@@ -177,7 +177,9 @@ pub fn app(db_path: PathBuf, assets_dir: Option<PathBuf>) -> Router {
         })),
         db_path: Arc::new(db_path),
     };
+    let v1_router = read_api_v1::router();
     Router::new()
+        .nest("/v1", v1_router)
         .route("/api/health", get(health))
         .route("/api/conversations", get(list_conversations))
         .route("/api/conversations/{id}", get(get_conversation))
