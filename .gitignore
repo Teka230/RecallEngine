@@ -31,6 +31,7 @@ tests/fixtures/reference-corpus/
 rewrite_planner.py
 /web/node_modules/
 /web/dist/
+/web/.test-build/
 
 /output-test-dir/
 /output-test.zip

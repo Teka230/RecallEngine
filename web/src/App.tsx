@@ -1,5 +1,18 @@
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { api, classifyLookup, RecallApiError } from "./api";
+import {
+  appendUniqueMessages,
+  containsMessage,
+  planSelectionTransition,
+} from "./navigation";
 import type {
   ContextResponse,
   ConversationDetail,
@@ -18,7 +31,37 @@ interface StatusState {
   message: string;
 }
 
+interface LoadedMessages {
+  items: Message[];
+  nextCursor: string | null;
+}
+
 const initialStatus: StatusState = { phase: "loading", message: "Opening RecallEngine…" };
+
+async function loadMessagesThroughTarget(
+  conversationId: string,
+  view: ViewMode,
+  targetMessageId?: string,
+): Promise<LoadedMessages> {
+  let page = await api.messages(conversationId, view);
+  let items = page.items;
+  let cursor = page.next_cursor;
+  const seenCursors = new Set<string>();
+
+  while (
+    targetMessageId &&
+    !containsMessage(items, targetMessageId) &&
+    cursor &&
+    !seenCursors.has(cursor)
+  ) {
+    seenCursors.add(cursor);
+    page = await api.messages(conversationId, view, cursor);
+    items = appendUniqueMessages(items, page.items);
+    cursor = page.next_cursor;
+  }
+
+  return { items, nextCursor: cursor };
+}
 
 export function App() {
   const [meta, setMeta] = useState<MetaResponse | null>(null);
@@ -29,6 +72,7 @@ export function App() {
   const [messageCursor, setMessageCursor] = useState<string | null>(null);
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
   const [context, setContext] = useState<ContextResponse | null>(null);
+  const [selectionOutsideView, setSelectionOutsideView] = useState(false);
   const [view, setView] = useState<ViewMode>("current-thread");
   const [showTechnical, setShowTechnical] = useState(false);
   const [leftMode, setLeftMode] = useState<LeftMode>("conversations");
@@ -37,10 +81,12 @@ export function App() {
   const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
   const [searchCursor, setSearchCursor] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusState>(initialStatus);
+  const messageRefs = useRef(new Map<string, HTMLButtonElement>());
 
   const showError = useCallback((error: unknown, fallback: string) => {
     const message = error instanceof Error ? error.message : fallback;
-    const unavailable = error instanceof TypeError || (error instanceof RecallApiError && error.status >= 500);
+    const unavailable =
+      error instanceof TypeError || (error instanceof RecallApiError && error.status >= 500);
     setStatus({ phase: unavailable ? "database-unavailable" : "error", message });
   }, []);
 
@@ -60,6 +106,15 @@ export function App() {
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  useEffect(() => {
+    if (!selectedMessage || selectionOutsideView) return;
+    const selectedId = selectedMessage.message_id;
+    const frame = window.requestAnimationFrame(() => {
+      messageRefs.current.get(selectedId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, selectedMessage?.message_id, selectionOutsideView, view]);
 
   const loadConversation = useCallback(
     async (conversationId: string, target?: Message) => {
@@ -83,13 +138,21 @@ export function App() {
           }
         }
 
-        const page = await api.messages(conversationId, targetView);
+        const loaded = await loadMessagesThroughTarget(
+          conversationId,
+          targetView,
+          targetContext?.center.message_id ?? target?.message_id,
+        );
+        const nextSelection = targetContext?.center ?? target ?? null;
+
         setActiveConversation(conversation);
         setView(targetView);
-        setMessages(page.items);
-        setMessageCursor(page.next_cursor);
-        setSelectedMessage(targetContext?.center ?? target ?? null);
+        setMessages(loaded.items);
+        setMessageCursor(loaded.nextCursor);
+        setSelectedMessage(nextSelection);
         setContext(targetContext);
+        setSelectionOutsideView(false);
+        if (nextSelection?.technical) setShowTechnical(true);
         setStatus({ phase: "idle", message: "" });
       } catch (error) {
         showError(error, "Unable to load conversation.");
@@ -108,7 +171,7 @@ export function App() {
   const selectMessage = useCallback(
     async (message: Message) => {
       setSelectedMessage(message);
-      setContext(null);
+      setSelectionOutsideView(false);
       setStatus({ phase: "loading", message: "Loading context…" });
       try {
         const nextContext = await api.context(message.message_id, view);
@@ -176,15 +239,61 @@ export function App() {
   };
 
   const changeView = async (nextView: ViewMode) => {
-    setView(nextView);
-    setSelectedMessage(null);
-    setContext(null);
-    if (!activeConversation) return;
+    if (nextView === view) return;
+    if (!activeConversation) {
+      setView(nextView);
+      return;
+    }
+
+    const previousSelection = selectedMessage;
+    const previousContext = context;
     setStatus({ phase: "loading", message: "Changing branch view…" });
+
     try {
-      const page = await api.messages(activeConversation.conversation_id, nextView);
-      setMessages(page.items);
-      setMessageCursor(page.next_cursor);
+      if (!previousSelection) {
+        const loaded = await loadMessagesThroughTarget(activeConversation.conversation_id, nextView);
+        setView(nextView);
+        setMessages(loaded.items);
+        setMessageCursor(loaded.nextCursor);
+        setSelectionOutsideView(false);
+        setStatus({ phase: "idle", message: "" });
+        return;
+      }
+
+      let nextContext: ContextResponse | null = null;
+      let visibility: "visible" | "outside-view" = "visible";
+      try {
+        nextContext = await api.context(previousSelection.message_id, nextView);
+      } catch (error) {
+        const outsideTargetView = error instanceof RecallApiError && error.status === 404;
+        if (!outsideTargetView) throw error;
+        visibility = "outside-view";
+      }
+
+      const plan = planSelectionTransition(true, visibility);
+      const loaded = await loadMessagesThroughTarget(
+        activeConversation.conversation_id,
+        nextView,
+        plan.scrollIntoView ? previousSelection.message_id : undefined,
+      );
+
+      setView(nextView);
+      setMessages(loaded.items);
+      setMessageCursor(loaded.nextCursor);
+      setSelectionOutsideView(plan.outsideView);
+
+      if (plan.replaceContext && nextContext) {
+        setSelectedMessage(nextContext.center);
+        setContext(nextContext);
+        if (nextContext.center.technical) setShowTechnical(true);
+      } else if (!plan.keepSelection) {
+        setSelectedMessage(null);
+        setContext(null);
+      } else if (plan.keepPreviousContext) {
+        setSelectedMessage(previousSelection);
+        setContext(previousContext);
+      }
+
       setStatus({ phase: "idle", message: "" });
     } catch (error) {
       showError(error, "Unable to change branch view.");
@@ -217,7 +326,7 @@ export function App() {
     if (!activeConversation || !messageCursor) return;
     try {
       const page = await api.messages(activeConversation.conversation_id, view, messageCursor);
-      setMessages((current) => [...current, ...page.items]);
+      setMessages((current) => appendUniqueMessages(current, page.items));
       setMessageCursor(page.next_cursor);
     } catch (error) {
       showError(error, "Unable to load more messages.");
@@ -329,6 +438,15 @@ export function App() {
             </div>
           </div>
 
+          {selectionOutsideView && selectedMessage && (
+            <div className="status-banner selection-notice" role="status">
+              <span>Selected message is outside this branch view. Selection and previous context are preserved.</span>
+              {view === "current-thread" && (
+                <button className="secondary" onClick={() => void changeView("all-active")}>Show all active</button>
+              )}
+            </div>
+          )}
+
           <div className="message-list">
             {!activeConversation ? (
               <Empty>Choose a conversation or search result.</Empty>
@@ -338,6 +456,11 @@ export function App() {
               visibleMessages.map((message) => (
                 <button
                   key={message.message_id}
+                  ref={(node: HTMLButtonElement | null) => {
+                    if (node) messageRefs.current.set(message.message_id, node);
+                    else messageRefs.current.delete(message.message_id);
+                  }}
+                  data-message-id={message.message_id}
                   className={`message-card ${selectedMessage?.message_id === message.message_id ? "selected" : ""} ${message.technical ? "technical" : ""}`}
                   onClick={() => void selectMessage(message)}
                 >
@@ -361,7 +484,7 @@ export function App() {
               <div className="reader-meta">Canonical message metadata</div>
             </div>
           </div>
-          <Inspector message={selectedMessage} context={context} />
+          <Inspector message={selectedMessage} context={context} outsideView={selectionOutsideView} />
         </aside>
       </main>
     </div>
@@ -418,12 +541,26 @@ function SearchList({
   ))}</>;
 }
 
-function Inspector({ message, context }: { message: Message | null; context: ContextResponse | null }) {
+function Inspector({
+  message,
+  context,
+  outsideView,
+}: {
+  message: Message | null;
+  context: ContextResponse | null;
+  outsideView: boolean;
+}) {
   if (!message) return <div className="inspector-body"><Empty>Select a message to inspect it.</Empty></div>;
   const copyReference = async () => {
     if (!message.stable_reference) return;
     await navigator.clipboard.writeText(message.stable_reference);
   };
+  const branchLabel = outsideView
+    ? "outside current view"
+    : message.branch.is_current_thread === true
+      ? "current thread"
+      : "active branch";
+
   return (
     <div className="inspector-body">
       <dl className="metadata-grid">
@@ -433,7 +570,7 @@ function Inspector({ message, context }: { message: Message | null; context: Con
         <Meta label="Role" value={message.role} />
         <Meta label="Node" value={message.node_id} mono />
         <Meta label="Parent" value={message.parent_id ?? "—"} mono />
-        <Meta label="Branch" value={message.branch.is_current_thread === true ? "current thread" : "active branch"} />
+        <Meta label="Branch" value={branchLabel} />
         <Meta label="Timestamp" value={formatDate(message.timestamp, message.created_at)} />
       </dl>
 
@@ -454,6 +591,7 @@ function Inspector({ message, context }: { message: Message | null; context: Con
 
       <section className="inspector-section">
         <div className="section-title">Context</div>
+        {outsideView && <span className="muted">Context shown is preserved from the previous branch view.</span>}
         {!context ? <span className="muted">Loading or unavailable.</span> : (
           <div className="context-stack">
             {context.before.map((item) => <ContextLine key={item.message_id} message={item} />)}

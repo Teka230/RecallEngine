@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "check": "tsc --noEmit && vite build",
+    "test:ui": "tsc -p tsconfig.test.json && node .test-build/tests/navigation-regression.test.js",
+    "check": "tsc --noEmit && npm run test:ui && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
