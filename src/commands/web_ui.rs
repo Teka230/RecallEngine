@@ -15,10 +15,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
-    commands::serve,
-    domain::reference::MessageReference,
-    error::Result,
-    read_model::ReadRepository,
+    commands::serve, domain::reference::MessageReference, error::Result, read_model::ReadRepository,
 };
 
 #[derive(Debug, Serialize)]
@@ -34,11 +31,7 @@ pub fn app(db_path: PathBuf, assets_dir: Option<PathBuf>) -> Router {
     app_with_dist(db_path, assets_dir, default_dist_dir())
 }
 
-pub fn app_with_dist(
-    db_path: PathBuf,
-    assets_dir: Option<PathBuf>,
-    dist_dir: PathBuf,
-) -> Router {
+pub fn app_with_dist(db_path: PathBuf, assets_dir: Option<PathBuf>, dist_dir: PathBuf) -> Router {
     let db_path = Arc::new(db_path);
     let dist_dir = Arc::new(dist_dir);
 
@@ -108,7 +101,10 @@ async fn resolve_ic(
     ic: i64,
 ) -> std::result::Result<axum::Json<IcResolution>, (StatusCode, String)> {
     if ic <= 0 {
-        return Err((StatusCode::BAD_REQUEST, "IC must be a positive integer".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "IC must be a positive integer".into(),
+        ));
     }
     let repository = ReadRepository::open_read_only(db_path.as_ref())
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;

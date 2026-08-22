@@ -15,7 +15,11 @@ fn built_dist() -> tempfile::TempDir {
         "<!doctype html><html><body><div id=\"root\">RecallEngine React UI</div><script type=\"module\" src=\"/assets/app.js\"></script></body></html>",
     )
     .unwrap();
-    fs::write(dist.path().join("assets/app.js"), "console.log('react build');").unwrap();
+    fs::write(
+        dist.path().join("assets/app.js"),
+        "console.log('react build');",
+    )
+    .unwrap();
     fs::write(dist.path().join("assets/app.css"), "body { margin: 0; }").unwrap();
     dist
 }
@@ -41,7 +45,9 @@ async fn built_web_ui_is_served_without_opening_the_database() {
     let (status, headers, body) = get("/").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        headers.get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok()),
+        headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
         Some("text/html; charset=utf-8")
     );
     assert!(body.contains("RecallEngine React UI"));
@@ -67,7 +73,9 @@ async fn web_assets_ship_with_local_security_headers() {
     let (status, headers, _) = get("/assets/app.css").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        headers.get(header::CACHE_CONTROL).and_then(|value| value.to_str().ok()),
+        headers
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
         Some("no-store")
     );
     assert_eq!(

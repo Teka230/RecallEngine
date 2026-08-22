@@ -5,7 +5,7 @@
 RecallEngine imports a ChatGPT data export without sending it anywhere. It preserves the conversation graph, message IDs, source JSON, attachment references, and branch structure in a canonical local database you can verify, inspect, search, or export to the flat SQLite format used by GPTExtractor and ExploGPT. The result is an addressable local message repository with a stable reference scheme—not an intelligent context-selection or semantic-ranking engine.
 
 > [!WARNING]
-> **Alpha software — local use only.** RecallEngine currently supports ChatGPT exports only. It has no UI, embeddings, cloud sync, profile import, authentication, or TLS. It is not published on crates.io yet; build it from this repository.
+> **Alpha software — local use only.** RecallEngine currently supports ChatGPT exports only. It has a local read-only web UI, but no embeddings, cloud sync, profile import, authentication, or TLS. It is not published on crates.io yet; build it from this repository.
 
 ## Why RecallEngine?
 
@@ -204,6 +204,20 @@ Start the read-only API against an imported database:
 curl http://127.0.0.1:8788/api/health
 ```
 
+The same command serves the read-only web UI. Build it once before starting
+`recall serve`:
+
+```bash
+cd web
+npm install
+npm run build
+cd ..
+./target/release/recall serve --db /path/to/history.sqlite
+```
+
+Then open <http://127.0.0.1:8788/>. The browser uses only the versioned
+`/v1` read contract; it does not read SQLite directly or expose write actions.
+
 Binding outside loopback requires an explicit operator consent flag:
 
 ```bash
@@ -228,7 +242,7 @@ Binding outside loopback requires an explicit operator consent flag:
 | `GET /api/assets?q=&limit=` | List linked assets. |
 | `GET /api/assets/{id}/file` | Serve a locally copied or symlinked asset. |
 
-The versioned read contract for the future web UI is documented in
+The versioned read contract used by the web UI is documented in
 [`READ-API-V1.md`](READ-API-V1.md). It is available under `/v1` and
 provides explicit snapshot metadata, cursor pagination, `current-thread` /
 `all-active` message views, context windows, search, and stable-reference
