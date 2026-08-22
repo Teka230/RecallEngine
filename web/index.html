@@ -1,87 +1,14 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <title>RecallEngine</title>
-  <link rel="stylesheet" href="/recall.css">
-  <script src="/recall.js" defer></script>
-</head>
-<body>
-  <div class="app-shell" data-read-only="true">
-    <header class="topbar">
-      <div class="brand-block">
-        <div class="brand-mark" aria-hidden="true">R</div>
-        <div>
-          <div class="brand">RecallEngine</div>
-          <div class="subtitle">Read-only memory explorer</div>
-        </div>
-      </div>
-
-      <form id="search-form" class="search-form" role="search">
-        <label class="sr-only" for="search-input">Search messages or resolve a stable reference</label>
-        <input id="search-input" autocomplete="off" spellcheck="false" placeholder="Search text or paste ref:ic/..." />
-        <button type="submit">Search</button>
-      </form>
-
-      <div class="meta-strip" aria-live="polite">
-        <span class="badge badge-readonly">READ ONLY</span>
-        <span id="snapshot-label" class="snapshot-label">Loading snapshot…</span>
-      </div>
-    </header>
-
-    <div id="status" class="status" role="status" aria-live="polite"></div>
-
-    <main class="workspace">
-      <aside class="panel navigation-panel">
-        <div class="panel-header">
-          <div class="segmented" role="tablist" aria-label="Navigation mode">
-            <button id="tab-conversations" class="segmented-button active" type="button">Conversations</button>
-            <button id="tab-search" class="segmented-button" type="button">Search</button>
-          </div>
-          <span id="left-count" class="count-label"></span>
-        </div>
-        <div id="left-list" class="list-scroll empty-state">Loading conversations…</div>
-        <button id="left-more" class="load-more hidden" type="button">Load more</button>
-      </aside>
-
-      <section class="panel reader-panel">
-        <div class="panel-header reader-header">
-          <div class="reader-title-wrap">
-            <h1 id="conversation-title">Choose a conversation</h1>
-            <div id="conversation-meta" class="reader-meta"></div>
-          </div>
-          <div class="reader-controls">
-            <label for="view-select">View</label>
-            <select id="view-select">
-              <option value="current-thread">Current thread</option>
-              <option value="all-active">All active</option>
-            </select>
-            <label class="checkbox-label">
-              <input id="technical-toggle" type="checkbox">
-              Technical
-            </label>
-          </div>
-        </div>
-        <div id="message-list" class="message-list empty-state">
-          Select a conversation or search result to inspect its messages.
-        </div>
-        <button id="messages-more" class="load-more hidden" type="button">Load more messages</button>
-      </section>
-
-      <aside class="panel inspector-panel">
-        <div class="panel-header">
-          <div>
-            <h2>Inspector</h2>
-            <div class="reader-meta">Canonical message metadata</div>
-          </div>
-        </div>
-        <div id="inspector" class="inspector-body empty-state">
-          Select a message to inspect its reference, branch and context.
-        </div>
-      </aside>
-    </main>
-  </div>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="referrer" content="no-referrer" />
+    <title>RecallEngine</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

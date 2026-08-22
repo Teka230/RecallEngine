@@ -84,6 +84,22 @@ Technical messages remain addressable by message ID, but they have `technical: t
 
 Resolves one active canonical message by its stable source message ID. It can return a technical message; IC/reference lookup deliberately remains limited to trusted user and assistant roles.
 
+## `GET /v1/messages/by-ic/{ic}`
+
+Resolves a positive local IC to the stable identity needed by the web UI. Only active referenceable `user` and `assistant` messages can resolve through this route.
+
+```json
+{
+  "ic": 42,
+  "message_id": "message-id",
+  "conversation_id": "conversation-id",
+  "reference": "[IC:42 | msg:message-id]",
+  "stable_reference": "ref:ic/42/uuid/message-id"
+}
+```
+
+The route is an address-resolution helper: clients that need canonical message metadata should follow it with `GET /v1/messages/{message_id}`. This avoids treating FTS text search for a number as IC resolution.
+
 ## `GET /v1/messages/{message_id}/context`
 
 Requires the same explicit `view` values as the messages endpoint. Optional `before` and `after` values default to 2 and are capped at 50.

@@ -29,7 +29,8 @@ import-*.json
 MemoryIA/data/recall-engine/
 tests/fixtures/reference-corpus/
 rewrite_planner.py
-
+/web/node_modules/
+/web/dist/
 
 /output-test-dir/
 /output-test.zip
