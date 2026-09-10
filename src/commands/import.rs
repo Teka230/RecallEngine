@@ -15,7 +15,7 @@ use crate::import::assets::build_asset_id;
 use crate::import::chatgpt::{
     collect_asset_links, load_asset_mapping, parse_fragment, parse_fragment_metadata, AssetLink,
 };
-use crate::import::discovery::discover_export;
+use crate::import::discovery::discover_export_with_assets;
 use crate::import::legacy_ic::seed_legacy_ic_map;
 use crate::import::manifest::{load_manifest, validate_manifest_sizes};
 use crate::import::validation::sha256_file;
@@ -38,8 +38,8 @@ pub fn run_chatgpt_import(
     strict: bool,
     seed_legacy_ic: Option<PathBuf>,
 ) -> Result<()> {
-    let layout = discover_export(&source, strict)?;
-    let source_root = layout.root.to_string_lossy().to_string();
+    let layout = discover_export_with_assets(&source, strict, assets != AssetMode::External)?;
+    let source_root = layout.source_root.to_string_lossy().to_string();
 
     let resolved_assets_dir = if let Some(dir) = assets_dir {
         dir

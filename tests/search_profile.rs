@@ -17,6 +17,17 @@ const LIMIT: usize = 60;
 const WARMUP_RUNS: usize = 3;
 const MEASURED_RUNS: usize = 20;
 
+fn configured_runs(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .unwrap_or_else(|_| panic!("{name} must be a non-negative integer"))
+        })
+        .unwrap_or(default)
+}
+
 fn profile_db() -> PathBuf {
     let value = env::var_os("RECALL_PROFILE_DB")
         .expect("set RECALL_PROFILE_DB to an existing RecallEngine SQLite database");
@@ -48,8 +59,18 @@ fn summary(label: &str, timings: &[Duration]) {
 async fn profile_search_je_sqlite_and_api() {
     let db = profile_db();
     let repository = ReadRepository::open_read_only(&db).expect("open profiling DB read-only");
+    let warmup_runs = configured_runs("RECALL_PROFILE_WARMUP_RUNS", WARMUP_RUNS);
+    let measured_runs = configured_runs("RECALL_PROFILE_MEASURED_RUNS", MEASURED_RUNS);
+    assert!(
+        measured_runs > 0,
+        "RECALL_PROFILE_MEASURED_RUNS must be greater than zero"
+    );
+    println!("profile configuration: warmup_runs={warmup_runs} measured_runs={measured_runs}");
 
-    for _ in 0..WARMUP_RUNS {
+    if warmup_runs > 0 {
+        println!("SQLite warmup: {warmup_runs} run(s)");
+    }
+    for _ in 0..warmup_runs {
         black_box(
             repository
                 .search_page(QUERY, LIMIT, None)
@@ -57,10 +78,11 @@ async fn profile_search_je_sqlite_and_api() {
         );
     }
 
-    let mut sqlite_timings = Vec::with_capacity(MEASURED_RUNS);
+    let mut sqlite_timings = Vec::with_capacity(measured_runs);
     let mut sample_count = 0usize;
     let mut sample_has_more = false;
-    for _ in 0..MEASURED_RUNS {
+    println!("SQLite first measured query starting");
+    for iteration in 0..measured_runs {
         let started = Instant::now();
         let page = repository
             .search_page(QUERY, LIMIT, None)
@@ -69,10 +91,19 @@ async fn profile_search_je_sqlite_and_api() {
         sample_count = page.items.len();
         sample_has_more = page.next_cursor.is_some();
         black_box(page);
+        if iteration == 0 {
+            println!(
+                "SQLite first measured query: {}us",
+                started.elapsed().as_micros()
+            );
+        }
     }
 
     let app = serve::app(db.clone(), None);
-    for _ in 0..WARMUP_RUNS {
+    if warmup_runs > 0 {
+        println!("API warmup: {warmup_runs} run(s)");
+    }
+    for _ in 0..warmup_runs {
         let response = app
             .clone()
             .oneshot(
@@ -87,8 +118,9 @@ async fn profile_search_je_sqlite_and_api() {
         black_box(to_bytes(response.into_body(), usize::MAX).await.unwrap());
     }
 
-    let mut api_timings = Vec::with_capacity(MEASURED_RUNS);
-    for _ in 0..MEASURED_RUNS {
+    let mut api_timings = Vec::with_capacity(measured_runs);
+    println!("API first measured query starting");
+    for iteration in 0..measured_runs {
         let started = Instant::now();
         let response = app
             .clone()
@@ -104,6 +136,12 @@ async fn profile_search_je_sqlite_and_api() {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         black_box(body);
         api_timings.push(started.elapsed());
+        if iteration == 0 {
+            println!(
+                "API first measured query: {}us",
+                started.elapsed().as_micros()
+            );
+        }
     }
 
     println!("DB: {}", db.display());

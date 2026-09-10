@@ -188,6 +188,7 @@ pub fn export_legacy_sqlite_with_scope(
     validate_export_integrity(source, &out, scope)?;
     create_titles_view(&out)?;
     let fts_available = ensure_legacy_fts5(&out)?;
+    ensure_legacy_message_indexes(&out)?;
 
     let stats = LegacyExportStats {
         messages_exported,
@@ -388,6 +389,19 @@ pub fn create_titles_view(conn: &Connection) -> Result<()> {
                 ) AS title
          FROM messages m
          GROUP BY m.conversation_id;",
+    )?;
+    Ok(())
+}
+
+pub fn ensure_legacy_message_indexes(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_messages_id ON messages(id);
+         CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+         CREATE INDEX IF NOT EXISTS idx_messages_ic ON messages(IC);
+         CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+         CREATE INDEX IF NOT EXISTS idx_messages_timestamp_role ON messages(timestamp, role);
+         CREATE INDEX IF NOT EXISTS idx_messages_model_slug ON messages(model_slug);
+         CREATE INDEX IF NOT EXISTS idx_messages_role_model ON messages(role, model_slug);",
     )?;
     Ok(())
 }

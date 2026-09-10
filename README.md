@@ -44,6 +44,9 @@ From ChatGPT:
 3. Select **Export data**, then confirm the export.
 4. When OpenAI sends the confirmation email or SMS, choose **Download data export**.
 5. Extract the downloaded ZIP archive and pass the extracted directory to `--source`.
+   Newer large exports may contain `Conversations*.zip` partitions inside the
+   export directory; that directory can be passed directly without manually
+   unpacking those inner archives.
 
 The export link expires after 24 hours, and preparing an export can take up to 7 days. The extracted directory normally contains `conversations.json`; large exports may contain numbered conversation shards instead. RecallEngine can also read supported sidecars and asset files from that same directory.
 
@@ -74,7 +77,14 @@ For development, replace `./target/release/recall` with `cargo run --bin recall 
 
 ## Import a ChatGPT export
 
-RecallEngine accepts either `conversations.json` or numbered shards such as `conversations-000.json`. When present, it also reads supported sidecars including `export_manifest.json`, `message_feedback.json`, `shared_conversations.json`, `library_files.json`, and `conversation_asset_file_names.json`.
+RecallEngine accepts either `conversations.json`, numbered shards such as
+`conversations-000.json`, or a partitioned export directory containing
+`Conversations*.zip`. For a partitioned directory, conversation JSON and
+supported sidecars are materialized in a temporary staging directory; the
+downloaded export is never modified. When present, RecallEngine also reads
+sidecars including `export_manifest.json`, `message_feedback.json`,
+`shared_conversations.json`, `library_files.json`, and
+`conversation_asset_file_names.json`.
 
 ```bash
 ./target/release/recall import chatgpt \
@@ -90,6 +100,11 @@ RecallEngine accepts either `conversations.json` or numbered shards such as `con
 | `external` (default) | Record asset references without copying or linking files. |
 | `copy` | Copy source assets to the destination directory, avoiding redundant writes. |
 | `symlink` | Create symlinks to source assets. |
+
+For a partitioned export, `external` keeps the `.dat` references without
+unpacking the large asset partitions; `verify` may therefore report those
+assets as not locally materialized. Use `copy` or `symlink` when local asset
+files are required.
 
 Use `--assets-dir <PATH>` to choose the destination for copied or linked assets; otherwise an `assets` directory is created next to the database. Add `--strict` to require a valid `export_manifest.json`. Without it, malformed conversation shards are recorded as import issues while valid shards can still be imported. Use `--seed-legacy-ic /path/to/legacy.sqlite` only with a SQLite database previously produced by GPTExtractor or RecallEngine's legacy export, containing the expected legacy `messages` schema.
 

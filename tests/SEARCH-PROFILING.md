@@ -9,6 +9,17 @@ RECALL_PROFILE_DB=/path/to/history.sqlite \
   cargo test --test search_profile profile_search_je_sqlite_and_api -- --ignored --nocapture
 ```
 
+The default run performs 3 warmups and 20 measured runs for both SQLite and the API. For a first diagnostic on a slow corpus, reduce the run count without changing the search implementation:
+
+```bash
+RECALL_PROFILE_DB=/path/to/history.sqlite \
+RECALL_PROFILE_WARMUP_RUNS=0 \
+RECALL_PROFILE_MEASURED_RUNS=1 \
+  cargo test --test search_profile profile_search_je_sqlite_and_api -- --ignored --nocapture
+```
+
+The harness announces the active phase and prints the duration of the first measured SQLite and API queries before completing the aggregate report.
+
 The report prints min/median/p95/max for:
 
 - `ReadRepository::search_page("je", 60, None)` — SQLite/read-model cost;

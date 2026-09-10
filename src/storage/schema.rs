@@ -1,9 +1,11 @@
 pub const MIGRATION_001: &str = include_str!("migrations/001_initial.sql");
 pub const MIGRATION_002: &str = include_str!("migrations/002_conversations_fts.sql");
+pub const MIGRATION_003: &str = include_str!("migrations/003_messages_timestamp_indexes.sql");
 
 pub fn apply_migrations(conn: &rusqlite::Connection) -> crate::Result<()> {
     conn.execute_batch(MIGRATION_001)?;
     conn.execute_batch(MIGRATION_002)?;
+    conn.execute_batch(MIGRATION_003)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS recall_engine_migrations (
             id TEXT PRIMARY KEY

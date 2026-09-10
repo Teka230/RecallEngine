@@ -24,6 +24,38 @@ fn import_fixture(db: &Path) {
 }
 
 #[test]
+fn legacy_export_creates_explo_gpt_message_indexes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("history.sqlite");
+    let out = tmp.path().join("legacy.sqlite");
+    import_fixture(&db);
+
+    let database = Database::open(&db).unwrap();
+    export_legacy_sqlite(database.connection(), &out).unwrap();
+
+    let legacy = rusqlite::Connection::open(&out).unwrap();
+    let indexes: Vec<String> = legacy
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    for required in [
+        "idx_messages_timestamp",
+        "idx_messages_timestamp_role",
+        "idx_messages_model_slug",
+        "idx_messages_role_model",
+    ] {
+        assert!(
+            indexes.iter().any(|name| name == required),
+            "missing index {required}"
+        );
+    }
+}
+
+#[test]
 fn legacy_export_preserves_ic_without_recalc() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("history.sqlite");
