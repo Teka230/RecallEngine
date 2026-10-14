@@ -237,7 +237,12 @@ fn test_semantic_conceptual_retrieval_fastembed_vs_fts5() {
         "FTS5 should return 0 results because vocabulary differs completely"
     );
 
-    // 2. Test FastEmbed E5 semantic retrieval on the same conceptual query
+    // 2. Test FastEmbed E5 semantic retrieval on the same conceptual query (skipped if cache absent)
+    if !recall_engine::semantic::embedding::is_e5_small_cached(None) {
+        println!("Skipping FastEmbed test: model weights are not present in local cache");
+        return;
+    }
+
     let mut embedder = FastEmbedProvider::try_new(None).expect("FastEmbed initialization");
     let runner = SemanticSpikeRunner::new(db.connection(), ChunkerOptions::default());
 

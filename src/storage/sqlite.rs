@@ -79,6 +79,8 @@ impl Database {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Ensure sqlite-vec extension is registered globally before sqlite3_open
+        crate::semantic::store::ensure_sqlite_vec_registered();
         let conn = Connection::open(path)?;
         // Journal mode: DELETE/rollback (PR-H5 Outcome A). Do not enable WAL here —
         // see tests/sqlite_concurrency.rs and the README concurrency note.

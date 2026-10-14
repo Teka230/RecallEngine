@@ -34,6 +34,10 @@ fn benchmark_m2_semantic_pipeline() {
 
     // 1. Inférence locale FastEmbed M2 (Micro-benchmarks sur batch 1, 8, 32)
     println!("--- 1. INFERENCE LOCALE FASTEMBED (Multilingual E5 Small / 384 dim) ---");
+    if !recall_engine::semantic::embedding::is_e5_small_cached(None) {
+        println!("   [SKIPPED] FastEmbed cache not present locally. Run with pre-cached weights for M2 benchmarks.");
+        return;
+    }
     let mut embedder = FastEmbedProvider::try_new(None).expect("Init FastEmbed M2");
 
     let sample_text = "RecallEngine preserves the conversation graph, message IDs, source JSON, and branch structure in a canonical local database.";
@@ -88,8 +92,14 @@ fn benchmark_m2_semantic_pipeline() {
             );
             let block_id = format!("cb-bench-{i}");
             let msg_id = format!("msg-bench-{i}");
-            let block_chunks =
-                chunk_content_block(&block_id, &msg_id, Some(i as i64 + 1), &text, &chunker_opts);
+            let block_chunks = chunk_content_block(
+                &block_id,
+                &msg_id,
+                Some(i as i64 + 1),
+                &text,
+                &chunker_opts,
+                "mock-deterministic-e5-small",
+            );
             chunks.extend(block_chunks);
         }
         chunks.truncate(count);
@@ -239,25 +249,33 @@ fn benchmark_m2_semantic_pipeline() {
         let proj_vec_mb = (target as f64 * vec_kb_per_chunk) / 1024.0;
         let proj_blob_mb = (target as f64 * blob_kb_per_chunk) / 1024.0;
         let proj_blob_latency_ms = (target as f64 * blob_us_per_chunk) / 1000.0;
-        // sqlite-vec indexation/SIMD sublinear scaling factor approximation
-        let proj_vec_latency_ms = (vec_us_5k * ((target as f64 / 5000.0).log2() + 1.0)) / 1000.0;
+        // vec0 0.1.x performs exact flat scan (linear O(N) with SIMD acceleration)
+        let vec_us_per_chunk = vec_us_5k / (last.count as f64);
+        let proj_vec_latency_ms = (target as f64 * vec_us_per_chunk) / 1000.0;
 
-        println!("\n   => Projection pour {} chunks :", target);
+        println!(
+            "\n   => Projection linéaire indicative pour {} chunks (scan exact O(N)) :",
+            target
+        );
         println!("      * Taille disque sqlite-vec : ~{:.1} MB", proj_vec_mb);
         println!("      * Taille disque BLOB       : ~{:.1} MB", proj_blob_mb);
         println!(
-            "      * Latence KNN sqlite-vec   : ~{:.1} ms",
+            "      * Latence KNN sqlite-vec   : ~{:.1} ms (extrapolation linéaire SIMD)",
             proj_vec_latency_ms
         );
         println!(
-            "      * Latence KNN BLOB         : ~{:.1} ms (Inacceptable pour UI temps reel)",
+            "      * Latence KNN BLOB         : ~{:.1} ms (scan linéaire standard)",
             proj_blob_latency_ms
         );
         println!(
-            "      * Facteur d'acceleration : ~{:.0}x",
-            proj_blob_latency_ms / (proj_vec_latency_ms / 1000.0).max(0.001) / 1000.0
+            "      * Facteur d'acceleration : ~{:.1}x",
+            proj_blob_latency_ms / proj_vec_latency_ms.max(0.001)
         );
     }
+
+    println!("\n   [Note Architecture] : vec0 0.1.x effectue un balayage linéaire exact avec accélération SIMD.");
+    println!("   Les latences à 50 000 et 100 000 chunks devront faire l'objet de mesures réelles en phase P2");
+    println!("   avant d'établir des engagements de latence de production sous les 50 ms.");
 
     println!("\n==========================================================================\n");
 }

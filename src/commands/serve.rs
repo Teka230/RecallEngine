@@ -514,6 +514,7 @@ async fn list_assets(
 }
 
 fn open_read_only(state: &AppState) -> rusqlite::Result<Connection> {
+    crate::semantic::store::ensure_sqlite_vec_registered();
     Connection::open_with_flags(
         state.db_path.as_ref(),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,

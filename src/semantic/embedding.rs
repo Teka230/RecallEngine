@@ -29,8 +29,17 @@ pub fn is_e5_small_cached(cache_dir: Option<&Path>) -> bool {
     if let Ok(entries) = std::fs::read_dir(snapshots) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if p.is_dir() && p.join("tokenizer.json").exists() && p.join("config.json").exists() {
-                return true;
+            if p.is_dir() {
+                let has_config = p.join("config.json").is_file();
+                let has_tokenizer = p.join("tokenizer.json").is_file();
+                let has_onnx = (p.join("onnx/model.onnx").is_file()
+                    && std::fs::metadata(p.join("onnx/model.onnx")).is_ok())
+                    || (p.join("model.onnx").is_file()
+                        && std::fs::metadata(p.join("model.onnx")).is_ok());
+
+                if has_config && has_tokenizer && has_onnx {
+                    return true;
+                }
             }
         }
     }
@@ -143,10 +152,19 @@ impl EmbeddingProvider for FastEmbedProvider {
     }
 }
 
-/// Hermetic mock provider for reproducible offline tests.
+/// Hermetic mock provider for reproducible offline tests with call accounting.
+#[derive(Debug)]
 pub struct MockDeterministicProvider {
     dimension: usize,
     model_id: String,
+    calls_count: std::sync::atomic::AtomicUsize,
+    embeddings_computed: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for MockDeterministicProvider {
+    fn default() -> Self {
+        Self::new(384)
+    }
 }
 
 impl MockDeterministicProvider {
@@ -154,7 +172,25 @@ impl MockDeterministicProvider {
         Self {
             dimension,
             model_id: "mock/deterministic-e5-small".to_string(),
+            calls_count: std::sync::atomic::AtomicUsize::new(0),
+            embeddings_computed: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    pub fn calls_count(&self) -> usize {
+        self.calls_count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn embeddings_computed(&self) -> usize {
+        self.embeddings_computed
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn reset_counters(&self) {
+        self.calls_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        self.embeddings_computed
+            .store(0, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Produce a deterministic pseudo-random unit vector based on input string and role prefix.
@@ -187,14 +223,13 @@ impl MockDeterministicProvider {
     }
 }
 
-impl Default for MockDeterministicProvider {
-    fn default() -> Self {
-        Self::new(384)
-    }
-}
-
 impl EmbeddingProvider for MockDeterministicProvider {
     fn embed_passages(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        self.calls_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.embeddings_computed
+            .fetch_add(texts.len(), std::sync::atomic::Ordering::SeqCst);
+
         Ok(texts
             .iter()
             .map(|t| Self::vector_for(t, "passage", self.dimension))
@@ -226,6 +261,8 @@ mod tests {
 
         assert_eq!(p1, p2);
         assert_eq!(p1[0].len(), 384);
+        assert_eq!(mock.calls_count(), 2);
+        assert_eq!(mock.embeddings_computed(), 2);
 
         // Check unit normalization
         let norm: f32 = p1[0].iter().map(|x| x * x).sum();
@@ -250,12 +287,29 @@ mod tests {
     }
 
     #[test]
-    fn test_is_e5_small_cached_detects_present_cache() {
-        // In local development, .fastembed_cache was materialized
-        let is_cached = is_e5_small_cached(None);
+    fn test_is_e5_small_cached_hermetic_structure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snapshot_dir = tmp
+            .path()
+            .join("models--intfloat--multilingual-e5-small/snapshots/test_snapshot_hash");
+        std::fs::create_dir_all(snapshot_dir.join("onnx")).unwrap();
+
+        // Initially missing required files
+        assert!(!is_e5_small_cached(Some(tmp.path())));
+
+        // Add config and tokenizer only (still missing onnx weights)
+        std::fs::write(snapshot_dir.join("config.json"), b"{}").unwrap();
+        std::fs::write(snapshot_dir.join("tokenizer.json"), b"{}").unwrap();
         assert!(
-            is_cached,
-            "Local .fastembed_cache should be detected as cached"
+            !is_e5_small_cached(Some(tmp.path())),
+            "Missing ONNX model weights should return false"
+        );
+
+        // Add model.onnx
+        std::fs::write(snapshot_dir.join("onnx/model.onnx"), b"fake_weights").unwrap();
+        assert!(
+            is_e5_small_cached(Some(tmp.path())),
+            "Complete cache with config, tokenizer, and onnx weights must return true"
         );
     }
 }

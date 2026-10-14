@@ -15,6 +15,39 @@ pub fn ensure_sqlite_vec_registered() {
     });
 }
 
+/// Function signature of sqlite3 extension entry points.
+type SqliteExtensionInit = unsafe extern "C" fn(
+    *mut rusqlite::ffi::sqlite3,
+    *mut *mut std::os::raw::c_char,
+    *const (),
+) -> std::os::raw::c_int;
+
+/// Explicitly register sqlite-vec on an existing rusqlite Connection.
+/// Useful when a connection was opened before ensure_sqlite_vec_registered was called.
+pub fn register_sqlite_vec_on_connection(conn: &Connection) -> Result<()> {
+    ensure_sqlite_vec_registered();
+    unsafe {
+        let init_fn: SqliteExtensionInit = std::mem::transmute(sqlite3_vec_init as *const ());
+        let mut err_msg: *mut std::os::raw::c_char = std::ptr::null_mut();
+        let rc = init_fn(conn.handle(), &mut err_msg, std::ptr::null());
+        if rc != rusqlite::ffi::SQLITE_OK {
+            let msg = if !err_msg.is_null() {
+                let s = std::ffi::CStr::from_ptr(err_msg)
+                    .to_string_lossy()
+                    .into_owned();
+                rusqlite::ffi::sqlite3_free(err_msg as *mut _);
+                s
+            } else {
+                format!("sqlite3_vec_init error code {rc}")
+            };
+            return Err(anyhow!(
+                "Failed to register sqlite-vec on connection: {msg}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Helper to cast a slice of f32 to raw little-endian bytes.
 pub fn f32_slice_to_bytes(slice: &[f32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, std::mem::size_of_val(slice)) }
@@ -67,6 +100,7 @@ pub struct VectorMatch {
     pub ic: Option<i64>,
     pub chunk_index: usize,
     pub chunk_hash: String,
+    pub fingerprint: String,
     pub text: String,
     pub distance: f32,
     pub similarity: f32,
@@ -95,6 +129,7 @@ pub struct SqliteVecStore<'a> {
 impl<'a> SqliteVecStore<'a> {
     pub fn new(conn: &'a Connection, dimension: usize) -> Self {
         ensure_sqlite_vec_registered();
+        let _ = register_sqlite_vec_on_connection(conn);
         Self { conn, dimension }
     }
 }
@@ -110,17 +145,27 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
                 ic INTEGER,
                 chunk_index INTEGER NOT NULL,
                 total_chunks INTEGER NOT NULL,
+                chunker_version TEXT NOT NULL DEFAULT 'v1-512-64',
+                model_id TEXT NOT NULL DEFAULT 'intfloat/multilingual-e5-small',
                 chunk_hash TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
                 text TEXT NOT NULL,
                 UNIQUE (content_block_id, chunk_index)
             );
             CREATE INDEX IF NOT EXISTS idx_vec_chunks_block ON semantic_vec_chunks(content_block_id);
             CREATE INDEX IF NOT EXISTS idx_vec_chunks_hash ON semantic_vec_chunks(chunk_hash);
+            CREATE INDEX IF NOT EXISTS idx_vec_chunks_fingerprint ON semantic_vec_chunks(fingerprint);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS semantic_vec_items USING vec0(
                 chunk_id INTEGER PRIMARY KEY,
                 embedding float[{}] distance_metric=cosine
             );
+
+            CREATE TRIGGER IF NOT EXISTS trg_semantic_vec_chunks_delete
+            AFTER DELETE ON semantic_vec_chunks
+            BEGIN
+                DELETE FROM semantic_vec_items WHERE chunk_id = OLD.chunk_id;
+            END;
             ",
             self.dimension
         ))?;
@@ -138,15 +183,19 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
 
         self.conn.execute(
             "INSERT INTO semantic_vec_chunks (
-                content_block_id, message_id, ic, chunk_index, total_chunks, chunk_hash, text
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                content_block_id, message_id, ic, chunk_index, total_chunks,
+                chunker_version, model_id, chunk_hash, fingerprint, text
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 &chunk.content_block_id,
                 &chunk.message_id,
                 chunk.ic,
                 chunk.chunk_index as i64,
                 chunk.total_chunks as i64,
+                &chunk.chunker_version,
+                &chunk.model_id,
                 &chunk.chunk_hash,
+                &chunk.fingerprint,
                 &chunk.text,
             ],
         )?;
@@ -189,7 +238,7 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
 
         let res = (|| -> Result<SyncStatus> {
             let mut stmt = self.conn.prepare(
-                "SELECT chunk_id, chunk_index, chunk_hash
+                "SELECT chunk_id, chunk_index, fingerprint
                  FROM semantic_vec_chunks
                  WHERE content_block_id = ?1
                  ORDER BY chunk_index ASC",
@@ -206,7 +255,7 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
                 && existing
                     .iter()
                     .zip(chunks.iter())
-                    .all(|((_, idx, hash), c)| *idx == c.chunk_index && hash == &c.chunk_hash)
+                    .all(|((_, idx, fp), c)| *idx == c.chunk_index && fp == &c.fingerprint)
             {
                 return Ok(SyncStatus::UpToDate);
             }
@@ -277,6 +326,7 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
                 c.ic,
                 c.chunk_index,
                 c.chunk_hash,
+                c.fingerprint,
                 c.text,
                 v.distance
             FROM semantic_vec_items v
@@ -286,7 +336,7 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
         )?;
 
         let rows = stmt.query_map(params![query_bytes, k as i64], |row| {
-            let distance: f32 = row.get(7)?;
+            let distance: f32 = row.get(8)?;
             Ok(VectorMatch {
                 chunk_id: row.get(0)?,
                 content_block_id: row.get(1)?,
@@ -294,7 +344,8 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
                 ic: row.get(3)?,
                 chunk_index: row.get::<_, i64>(4)? as usize,
                 chunk_hash: row.get(5)?,
-                text: row.get(6)?,
+                fingerprint: row.get(6)?,
+                text: row.get(7)?,
                 distance,
                 similarity: 1.0 / (1.0 + distance),
             })
@@ -338,13 +389,17 @@ impl<'a> VectorStore for SqliteBlobStore<'a> {
                 ic INTEGER,
                 chunk_index INTEGER NOT NULL,
                 total_chunks INTEGER NOT NULL,
+                chunker_version TEXT NOT NULL DEFAULT 'v1-512-64',
+                model_id TEXT NOT NULL DEFAULT 'intfloat/multilingual-e5-small',
                 chunk_hash TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
                 text TEXT NOT NULL,
                 embedding BLOB NOT NULL,
                 UNIQUE (content_block_id, chunk_index)
             );
             CREATE INDEX IF NOT EXISTS idx_blob_chunks_block ON semantic_blob_chunks(content_block_id);
             CREATE INDEX IF NOT EXISTS idx_blob_chunks_hash ON semantic_blob_chunks(chunk_hash);
+            CREATE INDEX IF NOT EXISTS idx_blob_chunks_fingerprint ON semantic_blob_chunks(fingerprint);
             ",
         )?;
         Ok(())
@@ -362,15 +417,19 @@ impl<'a> VectorStore for SqliteBlobStore<'a> {
         let vector_bytes = f32_slice_to_bytes(vector);
         self.conn.execute(
             "INSERT INTO semantic_blob_chunks (
-                content_block_id, message_id, ic, chunk_index, total_chunks, chunk_hash, text, embedding
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                content_block_id, message_id, ic, chunk_index, total_chunks,
+                chunker_version, model_id, chunk_hash, fingerprint, text, embedding
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 &chunk.content_block_id,
                 &chunk.message_id,
                 chunk.ic,
                 chunk.chunk_index as i64,
                 chunk.total_chunks as i64,
+                &chunk.chunker_version,
+                &chunk.model_id,
                 &chunk.chunk_hash,
+                &chunk.fingerprint,
                 &chunk.text,
                 vector_bytes,
             ],
@@ -406,7 +465,7 @@ impl<'a> VectorStore for SqliteBlobStore<'a> {
 
         let res = (|| -> Result<SyncStatus> {
             let mut stmt = self.conn.prepare(
-                "SELECT chunk_id, chunk_index, chunk_hash
+                "SELECT chunk_id, chunk_index, fingerprint
                  FROM semantic_blob_chunks
                  WHERE content_block_id = ?1
                  ORDER BY chunk_index ASC",
@@ -423,7 +482,7 @@ impl<'a> VectorStore for SqliteBlobStore<'a> {
                 && existing
                     .iter()
                     .zip(chunks.iter())
-                    .all(|((_, idx, hash), c)| *idx == c.chunk_index && hash == &c.chunk_hash)
+                    .all(|((_, idx, fp), c)| *idx == c.chunk_index && fp == &c.fingerprint)
             {
                 return Ok(SyncStatus::UpToDate);
             }
@@ -485,6 +544,7 @@ impl<'a> VectorStore for SqliteBlobStore<'a> {
                 ic,
                 chunk_index,
                 chunk_hash,
+                fingerprint,
                 text,
                 embedding
             FROM semantic_blob_chunks",
@@ -494,7 +554,7 @@ impl<'a> VectorStore for SqliteBlobStore<'a> {
         let mut rows = stmt.query([])?;
 
         while let Some(row) = rows.next()? {
-            let blob: Vec<u8> = row.get(7)?;
+            let blob: Vec<u8> = row.get(8)?;
             let vector = bytes_to_f32_vec(&blob)?;
             let distance = cosine_distance(query_vector, &vector);
 
@@ -505,7 +565,8 @@ impl<'a> VectorStore for SqliteBlobStore<'a> {
                 ic: row.get(3)?,
                 chunk_index: row.get::<_, i64>(4)? as usize,
                 chunk_hash: row.get(5)?,
-                text: row.get(6)?,
+                fingerprint: row.get(6)?,
+                text: row.get(7)?,
                 distance,
                 similarity: 1.0 / (1.0 + distance),
             });
@@ -547,7 +608,10 @@ mod tests {
             ic: Some(10),
             chunk_index: 0,
             total_chunks: 1,
+            chunker_version: "v1-512-64".into(),
+            model_id: "test-model".into(),
             chunk_hash: "h1".into(),
+            fingerprint: "fp1".into(),
             text: "premier chunk".into(),
         };
 
@@ -557,7 +621,10 @@ mod tests {
             ic: Some(20),
             chunk_index: 0,
             total_chunks: 1,
+            chunker_version: "v1-512-64".into(),
+            model_id: "test-model".into(),
             chunk_hash: "h2".into(),
+            fingerprint: "fp2".into(),
             text: "deuxieme chunk".into(),
         };
 
@@ -602,7 +669,10 @@ mod tests {
             ic: Some(100),
             chunk_index: 0,
             total_chunks: 1,
+            chunker_version: "v1-512-64".into(),
+            model_id: "test-model".into(),
             chunk_hash: "hash_v1".into(),
+            fingerprint: "fp_v1".into(),
             text: "version une du texte".into(),
         };
         let vec_v1 = vec![1.0f32, 0.0, 0.0, 0.0];
@@ -650,7 +720,10 @@ mod tests {
             ic: Some(100),
             chunk_index: 0,
             total_chunks: 2,
+            chunker_version: "v1-512-64".into(),
+            model_id: "test-model".into(),
             chunk_hash: "hash_v2_part1".into(),
+            fingerprint: "fp_v2_part1".into(),
             text: "version deux partie un".into(),
         };
         let chunk_v2_b = TextChunk {
@@ -659,7 +732,10 @@ mod tests {
             ic: Some(100),
             chunk_index: 1,
             total_chunks: 2,
+            chunker_version: "v1-512-64".into(),
+            model_id: "test-model".into(),
             chunk_hash: "hash_v2_part2".into(),
+            fingerprint: "fp_v2_part2".into(),
             text: "version deux partie deux".into(),
         };
         let vec_v2_a = vec![0.0f32, 1.0, 0.0, 0.0];

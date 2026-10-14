@@ -1,11 +1,16 @@
 pub const MIGRATION_001: &str = include_str!("migrations/001_initial.sql");
 pub const MIGRATION_002: &str = include_str!("migrations/002_conversations_fts.sql");
 pub const MIGRATION_003: &str = include_str!("migrations/003_messages_timestamp_indexes.sql");
+pub const MIGRATION_004: &str = include_str!("migrations/004_semantic_search.sql");
 
 pub fn apply_migrations(conn: &rusqlite::Connection) -> crate::Result<()> {
     conn.execute_batch(MIGRATION_001)?;
     conn.execute_batch(MIGRATION_002)?;
     conn.execute_batch(MIGRATION_003)?;
+    crate::semantic::store::ensure_sqlite_vec_registered();
+    let _ = crate::semantic::store::register_sqlite_vec_on_connection(conn);
+    conn.execute_batch(MIGRATION_004)?;
+
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS recall_engine_migrations (
             id TEXT PRIMARY KEY

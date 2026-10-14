@@ -162,6 +162,7 @@ impl ReadRepository {
         if !path.is_file() {
             return Err(RecallError::msg("Database not found"));
         }
+        crate::semantic::store::ensure_sqlite_vec_registered();
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -169,6 +170,10 @@ impl ReadRepository {
         let repository = Self { conn };
         repository.validate_schema()?;
         Ok(repository)
+    }
+
+    pub fn connection(&self) -> &Connection {
+        &self.conn
     }
 
     fn validate_schema(&self) -> Result<()> {

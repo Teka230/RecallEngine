@@ -97,6 +97,7 @@ impl<'a> SemanticSpikeRunner<'a> {
 
         // 1. Chunking
         let start_chunking = Instant::now();
+        let model_id = embedder.model_id();
         let mut chunks: Vec<TextChunk> = Vec::new();
         for b in &blocks {
             let produced = chunk_content_block(
@@ -105,6 +106,7 @@ impl<'a> SemanticSpikeRunner<'a> {
                 b.ic,
                 &b.text,
                 &self.chunker_options,
+                model_id,
             );
             chunks.extend(produced);
         }
