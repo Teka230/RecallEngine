@@ -34,7 +34,7 @@ pub struct SpikeReport {
 /// An eligible text content block from the canonical store.
 #[derive(Debug, Clone)]
 pub struct RawContentBlock {
-    pub block_id: i64,
+    pub block_id: String,
     pub message_id: String,
     pub ic: Option<i64>,
     pub text: String,
@@ -57,7 +57,7 @@ impl<'a> SemanticSpikeRunner<'a> {
     pub fn fetch_eligible_content_blocks(&self) -> Result<Vec<RawContentBlock>> {
         let mut stmt = self.conn.prepare(
             "SELECT
-                cb.rowid,
+                cb.id,
                 cb.message_id,
                 m.ic,
                 cb.text_content
@@ -100,7 +100,7 @@ impl<'a> SemanticSpikeRunner<'a> {
         let mut chunks: Vec<TextChunk> = Vec::new();
         for b in &blocks {
             let produced = chunk_content_block(
-                b.block_id,
+                &b.block_id,
                 &b.message_id,
                 b.ic,
                 &b.text,
@@ -130,17 +130,28 @@ impl<'a> SemanticSpikeRunner<'a> {
         vec_store.create_tables()?;
         blob_store.create_tables()?;
 
-        // 4. Ingestion benchmark: sqlite-vec
-        let start_vec_insert = Instant::now();
+        // Group chunks and corresponding embeddings by content_block_id for block-atomic sync
+        let mut block_grouped: std::collections::BTreeMap<String, (Vec<TextChunk>, Vec<Vec<f32>>)> =
+            std::collections::BTreeMap::new();
         for (chunk, vector) in chunks.iter().zip(embeddings.iter()) {
-            vec_store.insert_chunk(chunk, vector)?;
+            let entry = block_grouped
+                .entry(chunk.content_block_id.clone())
+                .or_default();
+            entry.0.push(chunk.clone());
+            entry.1.push(vector.clone());
+        }
+
+        // 4. Ingestion benchmark: sqlite-vec (atomic idempotent sync)
+        let start_vec_insert = Instant::now();
+        for (block_id, (b_chunks, b_vecs)) in &block_grouped {
+            vec_store.sync_block_chunks(block_id, b_chunks, b_vecs)?;
         }
         let sqlite_vec_insert_duration_us = start_vec_insert.elapsed().as_micros();
 
-        // 5. Ingestion benchmark: sqlite-blob
+        // 5. Ingestion benchmark: sqlite-blob (atomic idempotent sync)
         let start_blob_insert = Instant::now();
-        for (chunk, vector) in chunks.iter().zip(embeddings.iter()) {
-            blob_store.insert_chunk(chunk, vector)?;
+        for (block_id, (b_chunks, b_vecs)) in &block_grouped {
+            blob_store.sync_block_chunks(block_id, b_chunks, b_vecs)?;
         }
         let sqlite_blob_insert_duration_us = start_blob_insert.elapsed().as_micros();
 
@@ -166,15 +177,15 @@ impl<'a> SemanticSpikeRunner<'a> {
             _ => false,
         };
 
-        let vec_top5_keys: std::collections::HashSet<(i64, usize)> = vec_results
+        let vec_top5_keys: std::collections::HashSet<(String, usize)> = vec_results
             .iter()
             .take(5)
-            .map(|r| (r.content_block_id, r.chunk_index))
+            .map(|r| (r.content_block_id.clone(), r.chunk_index))
             .collect();
-        let blob_top5_keys: std::collections::HashSet<(i64, usize)> = blob_results
+        let blob_top5_keys: std::collections::HashSet<(String, usize)> = blob_results
             .iter()
             .take(5)
-            .map(|r| (r.content_block_id, r.chunk_index))
+            .map(|r| (r.content_block_id.clone(), r.chunk_index))
             .collect();
 
         let overlap_count = vec_top5_keys.intersection(&blob_top5_keys).count();

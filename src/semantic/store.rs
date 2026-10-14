@@ -47,11 +47,22 @@ pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     (1.0 - dot).max(0.0)
 }
 
+/// Status of chunk synchronization for a content block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncStatus {
+    /// Chunks were identical; no database write performed.
+    UpToDate,
+    /// Chunks were inserted fresh for this block.
+    Inserted { count: usize },
+    /// Existing chunks were updated/replaced atomically.
+    Replaced { old_count: usize, new_count: usize },
+}
+
 /// A matched chunk from vector retrieval.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorMatch {
     pub chunk_id: i64,
-    pub content_block_id: i64,
+    pub content_block_id: String,
     pub message_id: String,
     pub ic: Option<i64>,
     pub chunk_index: usize,
@@ -65,6 +76,12 @@ pub struct VectorMatch {
 pub trait VectorStore {
     fn create_tables(&self) -> Result<()>;
     fn insert_chunk(&self, chunk: &TextChunk, vector: &[f32]) -> Result<i64>;
+    fn sync_block_chunks(
+        &self,
+        content_block_id: &str,
+        chunks: &[TextChunk],
+        vectors: &[Vec<f32>],
+    ) -> Result<SyncStatus>;
     fn search_knn(&self, query_vector: &[f32], k: usize) -> Result<Vec<VectorMatch>>;
     fn count(&self) -> Result<usize>;
 }
@@ -88,14 +105,17 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
             "
             CREATE TABLE IF NOT EXISTS semantic_vec_chunks (
                 chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content_block_id INTEGER NOT NULL,
+                content_block_id TEXT NOT NULL,
                 message_id TEXT NOT NULL,
                 ic INTEGER,
                 chunk_index INTEGER NOT NULL,
                 total_chunks INTEGER NOT NULL,
                 chunk_hash TEXT NOT NULL,
-                text TEXT NOT NULL
+                text TEXT NOT NULL,
+                UNIQUE (content_block_id, chunk_index)
             );
+            CREATE INDEX IF NOT EXISTS idx_vec_chunks_block ON semantic_vec_chunks(content_block_id);
+            CREATE INDEX IF NOT EXISTS idx_vec_chunks_hash ON semantic_vec_chunks(chunk_hash);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS semantic_vec_items USING vec0(
                 chunk_id INTEGER PRIMARY KEY,
@@ -121,13 +141,13 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
                 content_block_id, message_id, ic, chunk_index, total_chunks, chunk_hash, text
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                chunk.content_block_id,
-                chunk.message_id,
+                &chunk.content_block_id,
+                &chunk.message_id,
                 chunk.ic,
                 chunk.chunk_index as i64,
                 chunk.total_chunks as i64,
-                chunk.chunk_hash,
-                chunk.text,
+                &chunk.chunk_hash,
+                &chunk.text,
             ],
         )?;
 
@@ -140,6 +160,103 @@ impl<'a> VectorStore for SqliteVecStore<'a> {
         )?;
 
         Ok(chunk_id)
+    }
+
+    fn sync_block_chunks(
+        &self,
+        content_block_id: &str,
+        chunks: &[TextChunk],
+        vectors: &[Vec<f32>],
+    ) -> Result<SyncStatus> {
+        if chunks.len() != vectors.len() {
+            return Err(anyhow!(
+                "Chunks count ({}) does not match vectors count ({})",
+                chunks.len(),
+                vectors.len()
+            ));
+        }
+        for v in vectors {
+            if v.len() != self.dimension {
+                return Err(anyhow!(
+                    "Vector dimension mismatch: expected {}, got {}",
+                    self.dimension,
+                    v.len()
+                ));
+            }
+        }
+
+        self.conn.execute_batch("SAVEPOINT sync_vec_block")?;
+
+        let res = (|| -> Result<SyncStatus> {
+            let mut stmt = self.conn.prepare(
+                "SELECT chunk_id, chunk_index, chunk_hash
+                 FROM semantic_vec_chunks
+                 WHERE content_block_id = ?1
+                 ORDER BY chunk_index ASC",
+            )?;
+
+            let existing: Vec<(i64, usize, String)> = stmt
+                .query_map(params![content_block_id], |r| {
+                    Ok((r.get(0)?, r.get::<_, i64>(1)? as usize, r.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            // Check if existing chunks exactly match new chunks
+            if existing.len() == chunks.len()
+                && existing
+                    .iter()
+                    .zip(chunks.iter())
+                    .all(|((_, idx, hash), c)| *idx == c.chunk_index && hash == &c.chunk_hash)
+            {
+                return Ok(SyncStatus::UpToDate);
+            }
+
+            let old_count = existing.len();
+
+            // Delete stale items from virtual and metadata tables
+            if !existing.is_empty() {
+                for (chunk_id, _, _) in &existing {
+                    self.conn.execute(
+                        "DELETE FROM semantic_vec_items WHERE chunk_id = ?1",
+                        params![chunk_id],
+                    )?;
+                }
+                self.conn.execute(
+                    "DELETE FROM semantic_vec_chunks WHERE content_block_id = ?1",
+                    params![content_block_id],
+                )?;
+            }
+
+            // Insert new chunks
+            for (chunk, vector) in chunks.iter().zip(vectors.iter()) {
+                self.insert_chunk(chunk, vector)?;
+            }
+
+            let new_count = chunks.len();
+            let status = if old_count == 0 {
+                SyncStatus::Inserted { count: new_count }
+            } else {
+                SyncStatus::Replaced {
+                    old_count,
+                    new_count,
+                }
+            };
+
+            Ok(status)
+        })();
+
+        match res {
+            Ok(status) => {
+                self.conn.execute_batch("RELEASE sync_vec_block")?;
+                Ok(status)
+            }
+            Err(e) => {
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO sync_vec_block; RELEASE sync_vec_block;");
+                Err(e)
+            }
+        }
     }
 
     fn search_knn(&self, query_vector: &[f32], k: usize) -> Result<Vec<VectorMatch>> {
@@ -216,16 +333,18 @@ impl<'a> VectorStore for SqliteBlobStore<'a> {
             "
             CREATE TABLE IF NOT EXISTS semantic_blob_chunks (
                 chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content_block_id INTEGER NOT NULL,
+                content_block_id TEXT NOT NULL,
                 message_id TEXT NOT NULL,
                 ic INTEGER,
                 chunk_index INTEGER NOT NULL,
                 total_chunks INTEGER NOT NULL,
                 chunk_hash TEXT NOT NULL,
                 text TEXT NOT NULL,
-                embedding BLOB NOT NULL
+                embedding BLOB NOT NULL,
+                UNIQUE (content_block_id, chunk_index)
             );
-            CREATE INDEX IF NOT EXISTS idx_blob_content_block ON semantic_blob_chunks(content_block_id);
+            CREATE INDEX IF NOT EXISTS idx_blob_chunks_block ON semantic_blob_chunks(content_block_id);
+            CREATE INDEX IF NOT EXISTS idx_blob_chunks_hash ON semantic_blob_chunks(chunk_hash);
             ",
         )?;
         Ok(())
@@ -246,18 +365,107 @@ impl<'a> VectorStore for SqliteBlobStore<'a> {
                 content_block_id, message_id, ic, chunk_index, total_chunks, chunk_hash, text, embedding
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                chunk.content_block_id,
-                chunk.message_id,
+                &chunk.content_block_id,
+                &chunk.message_id,
                 chunk.ic,
                 chunk.chunk_index as i64,
                 chunk.total_chunks as i64,
-                chunk.chunk_hash,
-                chunk.text,
+                &chunk.chunk_hash,
+                &chunk.text,
                 vector_bytes,
             ],
         )?;
 
         Ok(self.conn.last_insert_rowid())
+    }
+
+    fn sync_block_chunks(
+        &self,
+        content_block_id: &str,
+        chunks: &[TextChunk],
+        vectors: &[Vec<f32>],
+    ) -> Result<SyncStatus> {
+        if chunks.len() != vectors.len() {
+            return Err(anyhow!(
+                "Chunks count ({}) does not match vectors count ({})",
+                chunks.len(),
+                vectors.len()
+            ));
+        }
+        for v in vectors {
+            if v.len() != self.dimension {
+                return Err(anyhow!(
+                    "Vector dimension mismatch: expected {}, got {}",
+                    self.dimension,
+                    v.len()
+                ));
+            }
+        }
+
+        self.conn.execute_batch("SAVEPOINT sync_blob_block")?;
+
+        let res = (|| -> Result<SyncStatus> {
+            let mut stmt = self.conn.prepare(
+                "SELECT chunk_id, chunk_index, chunk_hash
+                 FROM semantic_blob_chunks
+                 WHERE content_block_id = ?1
+                 ORDER BY chunk_index ASC",
+            )?;
+
+            let existing: Vec<(i64, usize, String)> = stmt
+                .query_map(params![content_block_id], |r| {
+                    Ok((r.get(0)?, r.get::<_, i64>(1)? as usize, r.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            // Check if existing chunks exactly match new chunks
+            if existing.len() == chunks.len()
+                && existing
+                    .iter()
+                    .zip(chunks.iter())
+                    .all(|((_, idx, hash), c)| *idx == c.chunk_index && hash == &c.chunk_hash)
+            {
+                return Ok(SyncStatus::UpToDate);
+            }
+
+            let old_count = existing.len();
+
+            if !existing.is_empty() {
+                self.conn.execute(
+                    "DELETE FROM semantic_blob_chunks WHERE content_block_id = ?1",
+                    params![content_block_id],
+                )?;
+            }
+
+            for (chunk, vector) in chunks.iter().zip(vectors.iter()) {
+                self.insert_chunk(chunk, vector)?;
+            }
+
+            let new_count = chunks.len();
+            let status = if old_count == 0 {
+                SyncStatus::Inserted { count: new_count }
+            } else {
+                SyncStatus::Replaced {
+                    old_count,
+                    new_count,
+                }
+            };
+
+            Ok(status)
+        })();
+
+        match res {
+            Ok(status) => {
+                self.conn.execute_batch("RELEASE sync_blob_block")?;
+                Ok(status)
+            }
+            Err(e) => {
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO sync_blob_block; RELEASE sync_blob_block;");
+                Err(e)
+            }
+        }
     }
 
     fn search_knn(&self, query_vector: &[f32], k: usize) -> Result<Vec<VectorMatch>> {
@@ -334,7 +542,7 @@ mod tests {
         blob_store.create_tables().unwrap();
 
         let chunk1 = TextChunk {
-            content_block_id: 1,
+            content_block_id: "cb-uuid-1".to_string(),
             message_id: "m1".into(),
             ic: Some(10),
             chunk_index: 0,
@@ -344,7 +552,7 @@ mod tests {
         };
 
         let chunk2 = TextChunk {
-            content_block_id: 2,
+            content_block_id: "cb-uuid-2".to_string(),
             message_id: "m2".into(),
             ic: Some(20),
             chunk_index: 0,
@@ -371,9 +579,124 @@ mod tests {
 
         assert_eq!(res_vec.len(), 1);
         assert_eq!(res_blob.len(), 1);
-        assert_eq!(res_vec[0].content_block_id, 1);
-        assert_eq!(res_blob[0].content_block_id, 1);
+        assert_eq!(res_vec[0].content_block_id, "cb-uuid-1");
+        assert_eq!(res_blob[0].content_block_id, "cb-uuid-1");
         assert_eq!(res_vec[0].ic, Some(10));
         assert_eq!(res_blob[0].ic, Some(10));
+    }
+
+    #[test]
+    fn test_sync_block_chunks_idempotence_and_replacement() {
+        ensure_sqlite_vec_registered();
+        let conn = Connection::open_in_memory().unwrap();
+        let vec_store = SqliteVecStore::new(&conn, 4);
+        let blob_store = SqliteBlobStore::new(&conn, 4);
+
+        vec_store.create_tables().unwrap();
+        blob_store.create_tables().unwrap();
+
+        let block_id = "cb-test-sync";
+        let chunk_v1 = TextChunk {
+            content_block_id: block_id.to_string(),
+            message_id: "msg-1".into(),
+            ic: Some(100),
+            chunk_index: 0,
+            total_chunks: 1,
+            chunk_hash: "hash_v1".into(),
+            text: "version une du texte".into(),
+        };
+        let vec_v1 = vec![1.0f32, 0.0, 0.0, 0.0];
+
+        // 1. Initial insert via sync_block_chunks
+        let status_vec1 = vec_store
+            .sync_block_chunks(
+                block_id,
+                std::slice::from_ref(&chunk_v1),
+                std::slice::from_ref(&vec_v1),
+            )
+            .unwrap();
+        let status_blob1 = blob_store
+            .sync_block_chunks(
+                block_id,
+                std::slice::from_ref(&chunk_v1),
+                std::slice::from_ref(&vec_v1),
+            )
+            .unwrap();
+        assert_eq!(status_vec1, SyncStatus::Inserted { count: 1 });
+        assert_eq!(status_blob1, SyncStatus::Inserted { count: 1 });
+        assert_eq!(vec_store.count().unwrap(), 1);
+        assert_eq!(blob_store.count().unwrap(), 1);
+
+        // 2. Second sync with identical content -> must be UpToDate
+        let status_vec2 = vec_store
+            .sync_block_chunks(
+                block_id,
+                std::slice::from_ref(&chunk_v1),
+                std::slice::from_ref(&vec_v1),
+            )
+            .unwrap();
+        let status_blob2 = blob_store
+            .sync_block_chunks(block_id, &[chunk_v1], &[vec_v1])
+            .unwrap();
+        assert_eq!(status_vec2, SyncStatus::UpToDate);
+        assert_eq!(status_blob2, SyncStatus::UpToDate);
+        assert_eq!(vec_store.count().unwrap(), 1);
+        assert_eq!(blob_store.count().unwrap(), 1);
+
+        // 3. Third sync with updated content (2 chunks now) -> must be Replaced { old_count: 1, new_count: 2 }
+        let chunk_v2_a = TextChunk {
+            content_block_id: block_id.to_string(),
+            message_id: "msg-1".into(),
+            ic: Some(100),
+            chunk_index: 0,
+            total_chunks: 2,
+            chunk_hash: "hash_v2_part1".into(),
+            text: "version deux partie un".into(),
+        };
+        let chunk_v2_b = TextChunk {
+            content_block_id: block_id.to_string(),
+            message_id: "msg-1".into(),
+            ic: Some(100),
+            chunk_index: 1,
+            total_chunks: 2,
+            chunk_hash: "hash_v2_part2".into(),
+            text: "version deux partie deux".into(),
+        };
+        let vec_v2_a = vec![0.0f32, 1.0, 0.0, 0.0];
+        let vec_v2_b = vec![0.0f32, 0.0, 1.0, 0.0];
+
+        let status_vec3 = vec_store
+            .sync_block_chunks(
+                block_id,
+                &[chunk_v2_a.clone(), chunk_v2_b.clone()],
+                &[vec_v2_a.clone(), vec_v2_b.clone()],
+            )
+            .unwrap();
+        let status_blob3 = blob_store
+            .sync_block_chunks(block_id, &[chunk_v2_a, chunk_v2_b], &[vec_v2_a, vec_v2_b])
+            .unwrap();
+
+        assert_eq!(
+            status_vec3,
+            SyncStatus::Replaced {
+                old_count: 1,
+                new_count: 2
+            }
+        );
+        assert_eq!(
+            status_blob3,
+            SyncStatus::Replaced {
+                old_count: 1,
+                new_count: 2
+            }
+        );
+        assert_eq!(vec_store.count().unwrap(), 2);
+        assert_eq!(blob_store.count().unwrap(), 2);
+
+        // Verify KNN search reaches newly replaced chunks
+        let query = [0.0f32, 0.95, 0.0, 0.0];
+        let res = vec_store.search_knn(&query, 1).unwrap();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].chunk_hash, "hash_v2_part1");
     }
 }

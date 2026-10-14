@@ -1,7 +1,41 @@
 use anyhow::{anyhow, Result};
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Offline policy for model weight loading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfflineMode {
+    /// Strictly disallow network downloads. If model files are not present in local cache, fail immediately.
+    StrictOffline,
+    /// Allow downloading model weights over network if not found in local cache.
+    AllowDownload,
+}
+
+/// Check if model weights for intfloat/multilingual-e5-small exist locally in cache.
+pub fn is_e5_small_cached(cache_dir: Option<&Path>) -> bool {
+    let base = match cache_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => PathBuf::from(".fastembed_cache"),
+    };
+    let model_dir = base.join("models--intfloat--multilingual-e5-small");
+    if !model_dir.exists() {
+        return false;
+    }
+    let snapshots = model_dir.join("snapshots");
+    if !snapshots.exists() {
+        return false;
+    }
+    if let Ok(entries) = std::fs::read_dir(snapshots) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.join("tokenizer.json").exists() && p.join("config.json").exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 /// Trait defining an embedding provider for passages and queries.
 pub trait EmbeddingProvider {
@@ -23,13 +57,38 @@ pub struct FastEmbedProvider {
 }
 
 impl FastEmbedProvider {
-    /// Creates a new FastEmbedProvider with optional custom cache dir.
+    /// Creates a new FastEmbedProvider enforcing StrictOffline mode if cached, or returns an explicit error if missing.
     pub fn try_new(cache_dir: Option<PathBuf>) -> Result<Self> {
+        Self::try_new_with_mode(cache_dir, OfflineMode::StrictOffline)
+    }
+
+    /// Explicit strictly offline constructor: forbids any network calls.
+    pub fn try_new_offline(cache_dir: Option<PathBuf>) -> Result<Self> {
+        Self::try_new_with_mode(cache_dir, OfflineMode::StrictOffline)
+    }
+
+    /// Explicit online constructor: allows downloading model weights on first run.
+    pub fn try_new_online(cache_dir: Option<PathBuf>) -> Result<Self> {
+        Self::try_new_with_mode(cache_dir, OfflineMode::AllowDownload)
+    }
+
+    /// Creates a FastEmbedProvider with an explicit OfflineMode.
+    pub fn try_new_with_mode(cache_dir: Option<PathBuf>, mode: OfflineMode) -> Result<Self> {
+        if mode == OfflineMode::StrictOffline && !is_e5_small_cached(cache_dir.as_deref()) {
+            let target_cache = cache_dir
+                .unwrap_or_else(|| PathBuf::from(".fastembed_cache"))
+                .display()
+                .to_string();
+            return Err(anyhow!(
+                "StrictOffline: Model weights for 'intfloat/multilingual-e5-small' not found in cache '{target_cache}'. Network downloads are forbidden in offline mode."
+            ));
+        }
+
         let mut options = TextInitOptions::new(EmbeddingModel::MultilingualE5Small)
             .with_show_download_progress(false);
 
-        if let Some(dir) = cache_dir {
-            options = options.with_cache_dir(dir);
+        if let Some(ref dir) = cache_dir {
+            options = options.with_cache_dir(dir.clone());
         }
 
         let model = TextEmbedding::try_new(options)
@@ -174,5 +233,29 @@ mod tests {
 
         let q = mock.embed_query("Architecture").unwrap();
         assert_eq!(q.len(), 384);
+    }
+
+    #[test]
+    fn test_strict_offline_mode_rejects_missing_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let non_existent_cache = tmp.path().join("empty_cache");
+
+        let res = FastEmbedProvider::try_new_offline(Some(non_existent_cache));
+        assert!(res.is_err(), "StrictOffline must reject non-existent cache");
+        let err_msg = res.err().unwrap().to_string();
+        assert!(
+            err_msg.contains("StrictOffline"),
+            "Error must explicitly mention StrictOffline rejection"
+        );
+    }
+
+    #[test]
+    fn test_is_e5_small_cached_detects_present_cache() {
+        // In local development, .fastembed_cache was materialized
+        let is_cached = is_e5_small_cached(None);
+        assert!(
+            is_cached,
+            "Local .fastembed_cache should be detected as cached"
+        );
     }
 }

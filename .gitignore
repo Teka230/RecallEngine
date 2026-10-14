@@ -4,6 +4,8 @@
 /.filrouge/
 /_bmad-output/
 /.fastembed_cache/
+/.serena/
+
 /gen_recs.py
 /update_impl_map.py
 /update_roadmap.py

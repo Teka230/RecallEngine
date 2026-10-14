@@ -22,8 +22,8 @@ impl Default for ChunkerOptions {
 /// A deterministic chunk of text mapped to canonical database entities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextChunk {
-    /// Canonical content block row id.
-    pub content_block_id: i64,
+    /// Canonical content block ID (corresponds to content_blocks.id TEXT).
+    pub content_block_id: String,
     /// Portable source message ID (UUID).
     pub message_id: String,
     /// Stable internal citation (IC) if message is an eligible user/assistant message.
@@ -47,7 +47,7 @@ pub fn compute_sha256(text: &str) -> String {
 
 /// Deterministically chunks text from a content block while preserving boundaries.
 pub fn chunk_content_block(
-    content_block_id: i64,
+    content_block_id: &str,
     message_id: &str,
     ic: Option<i64>,
     text: &str,
@@ -64,7 +64,7 @@ pub fn chunk_content_block(
     if trimmed.chars().count() <= max_len {
         let chunk_hash = compute_sha256(trimmed);
         return vec![TextChunk {
-            content_block_id,
+            content_block_id: content_block_id.to_string(),
             message_id: message_id.to_string(),
             ic,
             chunk_index: 0,
@@ -153,7 +153,7 @@ pub fn chunk_content_block(
         .map(|(chunk_index, chunk_text)| {
             let chunk_hash = compute_sha256(&chunk_text);
             TextChunk {
-                content_block_id,
+                content_block_id: content_block_id.to_string(),
                 message_id: message_id.to_string(),
                 ic,
                 chunk_index,
@@ -172,12 +172,18 @@ mod tests {
     #[test]
     fn test_short_text_single_chunk() {
         let opts = ChunkerOptions::default();
-        let chunks = chunk_content_block(1, "msg-1", Some(42), "Court message de test.", &opts);
+        let chunks = chunk_content_block(
+            "cb-uuid-1",
+            "msg-1",
+            Some(42),
+            "Court message de test.",
+            &opts,
+        );
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].chunk_index, 0);
         assert_eq!(chunks[0].total_chunks, 1);
-        assert_eq!(chunks[0].content_block_id, 1);
+        assert_eq!(chunks[0].content_block_id, "cb-uuid-1");
         assert_eq!(chunks[0].message_id, "msg-1");
         assert_eq!(chunks[0].ic, Some(42));
         assert_eq!(chunks[0].text, "Court message de test.");
@@ -190,7 +196,7 @@ mod tests {
     #[test]
     fn test_empty_text_returns_empty() {
         let opts = ChunkerOptions::default();
-        let chunks = chunk_content_block(1, "msg-1", Some(42), "   ", &opts);
+        let chunks = chunk_content_block("cb-uuid-1", "msg-1", Some(42), "   ", &opts);
         assert!(chunks.is_empty());
     }
 
@@ -205,8 +211,8 @@ mod tests {
                     Deuxieme paragraphe detaillant le mecanisme de recherche plein texte FTS5 et les identifiants stables.\n\n\
                     Troisieme paragraphe sur l'integration des embeddings vectoriels.";
 
-        let chunks1 = chunk_content_block(10, "msg-10", Some(100), text, &opts);
-        let chunks2 = chunk_content_block(10, "msg-10", Some(100), text, &opts);
+        let chunks1 = chunk_content_block("cb-uuid-10", "msg-10", Some(100), text, &opts);
+        let chunks2 = chunk_content_block("cb-uuid-10", "msg-10", Some(100), text, &opts);
 
         assert_eq!(chunks1, chunks2, "Chunking must be 100% deterministic");
         assert!(chunks1.len() >= 3);
@@ -214,7 +220,7 @@ mod tests {
         for (i, c) in chunks1.iter().enumerate() {
             assert_eq!(c.chunk_index, i);
             assert_eq!(c.total_chunks, chunks1.len());
-            assert_eq!(c.content_block_id, 10);
+            assert_eq!(c.content_block_id, "cb-uuid-10");
             assert_eq!(c.message_id, "msg-10");
             assert_eq!(c.ic, Some(100));
             assert_eq!(c.chunk_hash, compute_sha256(&c.text));
