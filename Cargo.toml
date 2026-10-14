@@ -31,6 +31,8 @@ walkdir = "2"
 chrono = "0.4.45"
 zip = "8.6.0"
 ratatui-textarea = "0.9.2"
+sqlite-vec = "0.1.9"
+fastembed = { version = "7.1", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
@@ -38,3 +40,6 @@ tower = { version = "0.5", features = ["util"] }
 [profile.release]
 lto = true
 codegen-units = 1
+
+[profile.test]
+debug = 1

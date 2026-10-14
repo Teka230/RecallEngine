@@ -103,10 +103,10 @@ fn discover_in_root(
         source_root,
         conversation_paths: shards,
         manifest_path: has_manifest.then_some(manifest_path),
-        asset_mapping_path: optional_file(&root, "conversation_asset_file_names.json"),
-        feedback_path: optional_file(&root, "message_feedback.json"),
-        shared_path: optional_file(&root, "shared_conversations.json"),
-        library_path: optional_file(&root, "library_files.json"),
+        asset_mapping_path: optional_file(root, "conversation_asset_file_names.json"),
+        feedback_path: optional_file(root, "message_feedback.json"),
+        shared_path: optional_file(root, "shared_conversations.json"),
+        library_path: optional_file(root, "library_files.json"),
         _staging: staging,
     }))
 }

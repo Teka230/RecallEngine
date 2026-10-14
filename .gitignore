@@ -3,6 +3,7 @@
 /docs/
 /.filrouge/
 /_bmad-output/
+/.fastembed_cache/
 /gen_recs.py
 /update_impl_map.py
 /update_roadmap.py

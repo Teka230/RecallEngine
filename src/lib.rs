@@ -11,6 +11,7 @@ pub mod output;
 pub mod read_model;
 pub mod repository;
 pub mod search;
+pub mod semantic;
 pub mod storage;
 pub mod tui;
 

@@ -1,0 +1,131 @@
+[
+  {
+    "id": "conv-sem-001",
+    "title": "Gouvernance et agents autonomes",
+    "create_time": 1710000000.0,
+    "update_time": 1710000500.0,
+    "current_node": "node-sem-a1",
+    "default_model_slug": "gpt-4o",
+    "mapping": {
+      "root": {"id": "root", "parent": null, "message": null},
+      "node-sem-u1": {
+        "id": "node-sem-u1",
+        "parent": "root",
+        "message": {
+          "id": "00000000-0000-4000-8000-000000000101",
+          "author": {"role": "user", "name": null},
+          "create_time": 1710000010.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Comment concevoir un systeme ou l'agent intelligent propose des actions sans disposer de l'autorite d'execution directe ?"
+            ]
+          },
+          "metadata": {}
+        }
+      },
+      "node-sem-a1": {
+        "id": "node-sem-a1",
+        "parent": "node-sem-u1",
+        "message": {
+          "id": "00000000-0000-4000-8000-000000000102",
+          "author": {"role": "assistant", "name": null},
+          "create_time": 1710000020.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Pour separer l'autorite de la proposition, on utilise un mutation guard et un registre de contraintes hote. L'application hote valide chaque action avant emission sur le socket unix local. Le broker agit en relay-only sans stocker d'etat metier ni prendre de decision arbitraire."
+            ]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  },
+  {
+    "id": "conv-sem-002",
+    "title": "Optimisation des performances SQLite",
+    "create_time": 1710001000.0,
+    "update_time": 1710001500.0,
+    "current_node": "node-sem-a2",
+    "default_model_slug": "gpt-4o",
+    "mapping": {
+      "root": {"id": "root", "parent": null, "message": null},
+      "node-sem-u2": {
+        "id": "node-sem-u2",
+        "parent": "root",
+        "message": {
+          "id": "00000000-0000-4000-8000-000000000201",
+          "author": {"role": "user", "name": null},
+          "create_time": 1710001010.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Quelles sont les meilleures pratiques pour reduire la latence des requetes sur un fichier SQLite local sous haute concurrence de lecture ?"
+            ]
+          },
+          "metadata": {}
+        }
+      },
+      "node-sem-a2": {
+        "id": "node-sem-a2",
+        "parent": "node-sem-u2",
+        "message": {
+          "id": "00000000-0000-4000-8000-000000000202",
+          "author": {"role": "assistant", "name": null},
+          "create_time": 1710001020.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Il convient d'activer le mode WAL (Write-Ahead Logging), d'ajuster le cache_size en memoire RAM, et de placer des index couvrants composites. Pour la recherche en texte integral, SQLite FTS5 tokenize avec unicode61 et indexe les colonnes cibles."
+            ]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  },
+  {
+    "id": "conv-sem-003",
+    "title": "Art culinaire et cuisine italienne",
+    "create_time": 1710002000.0,
+    "update_time": 1710002500.0,
+    "current_node": "node-sem-a3",
+    "default_model_slug": "gpt-4o",
+    "mapping": {
+      "root": {"id": "root", "parent": null, "message": null},
+      "node-sem-u3": {
+        "id": "node-sem-u3",
+        "parent": "root",
+        "message": {
+          "id": "00000000-0000-4000-8000-000000000301",
+          "author": {"role": "user", "name": null},
+          "create_time": 1710002010.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Peux-tu me donner la vraie recette traditionnelle des spaghetti carbonara de Rome ?"
+            ]
+          },
+          "metadata": {}
+        }
+      },
+      "node-sem-a3": {
+        "id": "node-sem-a3",
+        "parent": "node-sem-u3",
+        "message": {
+          "id": "00000000-0000-4000-8000-000000000302",
+          "author": {"role": "assistant", "name": null},
+          "create_time": 1710002020.0,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "La recette authentique des carbonara ne contient jamais de creme fraiche. On utilise uniquement du guanciale dore a la poele, des jaunes d'oeufs frais, du pecorino romano rape et beaucoup de poivre noir fraichement moulu, lie avec l'eau de cuisson des pates al dente."
+            ]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  }
+]
