@@ -169,6 +169,7 @@ struct SearchQuery {
     q: String,
     limit: Option<usize>,
     cursor: Option<String>,
+    mode: Option<String>,
 }
 
 type ApiResult<T> = std::result::Result<Json<T>, (StatusCode, String)>;
@@ -321,8 +322,49 @@ async fn search(
     Query(query): Query<SearchQuery>,
 ) -> ApiResult<PageResponse<SearchResponse>> {
     let repository = repository(&state)?;
+    let mode = match query.mode.as_deref() {
+        Some("hybrid") => crate::search::SearchMode::Hybrid,
+        Some("semantic") => crate::search::SearchMode::Semantic,
+        Some("lexical") | None => crate::search::SearchMode::Lexical,
+        Some(other) => {
+            return Err(bad_request(format!(
+                "unsupported mode '{other}'; use lexical, semantic, or hybrid"
+            )));
+        }
+    };
+
+    let mut embedder = if mode != crate::search::SearchMode::Lexical
+        && crate::semantic::embedding::is_e5_small_cached(None)
+    {
+        crate::semantic::embedding::FastEmbedProvider::try_new_offline(None).ok()
+    } else {
+        None
+    };
+
+    if mode == crate::search::SearchMode::Semantic {
+        let hybrid = crate::semantic::hybrid::HybridSearchService::new(repository.connection());
+        if !hybrid.is_vector_index_available() {
+            return Err(bad_request(
+                "Semantic search index not found or empty. Run 'recall embed' first.",
+            ));
+        }
+        if embedder.is_none() {
+            return Err(bad_request(
+                "Model cache for 'intfloat/multilingual-e5-small' not found. Run 'recall embed' to set up.",
+            ));
+        }
+    }
+
     let page = repository
-        .search_page(&query.q, page_limit(query.limit), query.cursor.as_deref())
+        .search_page_with_mode(
+            &query.q,
+            page_limit(query.limit),
+            query.cursor.as_deref(),
+            mode,
+            embedder
+                .as_mut()
+                .map(|e| e as &mut dyn crate::semantic::EmbeddingProvider),
+        )
         .map_err(map_error)?;
     let items = page
         .items
@@ -497,7 +539,7 @@ fn not_found(message: impl Into<String>) -> (StatusCode, String) {
 
 fn map_error(error: impl std::fmt::Display) -> (StatusCode, String) {
     let message = error.to_string();
-    if message.starts_with("invalid cursor") {
+    if message.starts_with("invalid cursor") || message.contains("Semantic search") {
         return bad_request(message);
     }
     (StatusCode::INTERNAL_SERVER_ERROR, message)

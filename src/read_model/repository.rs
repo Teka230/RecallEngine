@@ -153,6 +153,11 @@ struct SearchCursor {
     message_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HybridCursor {
+    offset: usize,
+}
+
 pub struct ReadRepository {
     conn: Connection,
 }
@@ -749,6 +754,266 @@ impl ReadRepository {
             items: rows,
             next_cursor,
         })
+    }
+
+    pub fn search_hit_by_message_id(
+        &self,
+        message_id: &str,
+        excerpt: &str,
+    ) -> Result<Option<SearchHit>> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT m.conversation_id, COALESCE(c.title, 'Untitled'), m.id,
+                    CASE WHEN {TRUSTED_REFERENCE_ROLE_PREDICATE} THEN m.ic ELSE NULL END,
+                    COALESCE(m.role, 'unknown'), m.model_slug, n.id, n.parent_id,
+                    m.create_time, m.timestamp
+             FROM messages m
+             JOIN nodes n ON n.id = m.node_id
+             JOIN conversations c ON c.id = m.conversation_id
+             WHERE m.id = ?1 AND m.is_active = 1 AND n.is_active = 1 AND c.is_active = 1
+             LIMIT 1"
+        ))?;
+        statement
+            .query_row([message_id], |row| {
+                Ok(SearchHit {
+                    conversation_id: row.get(0)?,
+                    conversation_title: row.get(1)?,
+                    message_id: row.get(2)?,
+                    ic: row.get(3)?,
+                    role: row.get(4)?,
+                    model_slug: row.get(5)?,
+                    node_id: row.get(6)?,
+                    parent_node_id: row.get(7)?,
+                    excerpt: excerpt.to_string(),
+                    created_at: row.get(8)?,
+                    timestamp: row.get(9)?,
+                })
+            })
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn search_hybrid(
+        &self,
+        term: &str,
+        limit: usize,
+        embedder: Option<&mut dyn crate::semantic::EmbeddingProvider>,
+    ) -> Result<Vec<SearchHit>> {
+        let term = term.trim();
+        if term.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hybrid = crate::semantic::hybrid::HybridSearchService::new(&self.conn);
+        let query = crate::search::SearchQuery {
+            text: term.to_string(),
+            syntax: crate::search::SearchSyntax::Simple,
+            mode: crate::search::SearchMode::Hybrid,
+            limit: limit.min(500) as u32,
+            offset: 0,
+            role: None,
+            count_mode: crate::search::CountMode::None,
+            ic_min: None,
+            ic_max: None,
+            date_min: None,
+            date_max: None,
+        };
+        let search_res = hybrid.search(embedder, &query)?;
+        let mut hits = Vec::new();
+        for m in &search_res.results {
+            if let Some(hit) = self.search_hit_by_message_id(&m.message_id, &m.snippet.text)? {
+                hits.push(hit);
+            }
+        }
+        Ok(hits)
+    }
+
+    pub fn search_page_hybrid(
+        &self,
+        term: &str,
+        limit: usize,
+        cursor: Option<&str>,
+        embedder: Option<&mut dyn crate::semantic::EmbeddingProvider>,
+    ) -> Result<ReadPage<SearchHit>> {
+        let term = term.trim();
+        let page_limit = limit.min(500);
+        if term.is_empty() || page_limit == 0 {
+            return Ok(ReadPage {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        let offset = if let Some(cursor_str) = cursor {
+            let decoded: Option<HybridCursor> = decode_cursor(Some(cursor_str))?;
+            decoded.map(|c| c.offset).unwrap_or(0)
+        } else {
+            0
+        };
+
+        let hybrid = crate::semantic::hybrid::HybridSearchService::new(&self.conn);
+        let query = crate::search::SearchQuery {
+            text: term.to_string(),
+            syntax: crate::search::SearchSyntax::Simple,
+            mode: crate::search::SearchMode::Hybrid,
+            limit: (page_limit + 1) as u32,
+            offset: offset as u32,
+            role: None,
+            count_mode: crate::search::CountMode::None,
+            ic_min: None,
+            ic_max: None,
+            date_min: None,
+            date_max: None,
+        };
+        let search_res = hybrid.search(embedder, &query)?;
+        let mut hits = Vec::new();
+        for m in &search_res.results {
+            if let Some(hit) = self.search_hit_by_message_id(&m.message_id, &m.snippet.text)? {
+                hits.push(hit);
+            }
+        }
+
+        let has_more = hits.len() > page_limit;
+        if has_more {
+            hits.truncate(page_limit);
+        }
+        let next_cursor = if has_more {
+            Some(encode_cursor(&HybridCursor {
+                offset: offset + page_limit,
+            })?)
+        } else {
+            None
+        };
+
+        Ok(ReadPage {
+            items: hits,
+            next_cursor,
+        })
+    }
+
+    pub fn search_page_semantic(
+        &self,
+        term: &str,
+        limit: usize,
+        cursor: Option<&str>,
+        embedder: &mut dyn crate::semantic::EmbeddingProvider,
+    ) -> Result<ReadPage<SearchHit>> {
+        let term = term.trim();
+        let page_limit = limit.min(500);
+        if term.is_empty() || page_limit == 0 {
+            return Ok(ReadPage {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        let offset = if let Some(cursor_str) = cursor {
+            let decoded: Option<HybridCursor> = decode_cursor(Some(cursor_str))?;
+            decoded.map(|c| c.offset).unwrap_or(0)
+        } else {
+            0
+        };
+
+        let hybrid = crate::semantic::hybrid::HybridSearchService::new(&self.conn);
+        if !hybrid.is_vector_index_available() {
+            return Err(RecallError::msg(
+                "Semantic search index not found or empty. Run 'recall embed' first.",
+            ));
+        }
+
+        let query = crate::search::SearchQuery {
+            text: term.to_string(),
+            syntax: crate::search::SearchSyntax::Simple,
+            mode: crate::search::SearchMode::Semantic,
+            limit: (page_limit + 1) as u32,
+            offset: offset as u32,
+            role: None,
+            count_mode: crate::search::CountMode::None,
+            ic_min: None,
+            ic_max: None,
+            date_min: None,
+            date_max: None,
+        };
+        let query_vector = embedder.embed_query(term)?;
+        let candidates = hybrid.fetch_vector_candidates(
+            &query_vector,
+            (offset + page_limit + 1).max(50),
+            &query,
+        )?;
+
+        let mut seen = std::collections::HashSet::new();
+        let mut deduped = Vec::new();
+        for c in candidates {
+            if seen.insert(c.message_id.clone()) {
+                deduped.push(c);
+            }
+        }
+
+        let paged: Vec<_> = deduped
+            .into_iter()
+            .skip(offset)
+            .take(page_limit + 1)
+            .collect();
+        let mut hits = Vec::new();
+        for c in &paged {
+            if let Some(hit) = self.search_hit_by_message_id(&c.message_id, &c.text)? {
+                hits.push(hit);
+            }
+        }
+
+        let has_more = hits.len() > page_limit;
+        if has_more {
+            hits.truncate(page_limit);
+        }
+        let next_cursor = if has_more {
+            Some(encode_cursor(&HybridCursor {
+                offset: offset + page_limit,
+            })?)
+        } else {
+            None
+        };
+
+        Ok(ReadPage {
+            items: hits,
+            next_cursor,
+        })
+    }
+
+    pub fn search_page_with_mode(
+        &self,
+        term: &str,
+        limit: usize,
+        cursor: Option<&str>,
+        mode: crate::search::SearchMode,
+        embedder: Option<&mut dyn crate::semantic::EmbeddingProvider>,
+    ) -> Result<ReadPage<SearchHit>> {
+        match mode {
+            crate::search::SearchMode::Lexical => self.search_page(term, limit, cursor),
+            crate::search::SearchMode::Hybrid => {
+                self.search_page_hybrid(term, limit, cursor, embedder)
+            }
+            crate::search::SearchMode::Semantic => {
+                let Some(embedder) = embedder else {
+                    return Err(RecallError::msg(
+                        "Semantic search requires an embedding provider",
+                    ));
+                };
+                self.search_page_semantic(term, limit, cursor, embedder)
+            }
+        }
+    }
+
+    pub fn search_with_mode(
+        &self,
+        term: &str,
+        limit: usize,
+        mode: crate::search::SearchMode,
+        embedder: Option<&mut dyn crate::semantic::EmbeddingProvider>,
+    ) -> Result<Vec<SearchHit>> {
+        match mode {
+            crate::search::SearchMode::Lexical => self.search(term, limit),
+            crate::search::SearchMode::Hybrid => self.search_hybrid(term, limit, embedder),
+            crate::search::SearchMode::Semantic => {
+                let page = self.search_page_with_mode(term, limit, None, mode, embedder)?;
+                Ok(page.items)
+            }
+        }
     }
 
     pub fn list_conversations_cursor(

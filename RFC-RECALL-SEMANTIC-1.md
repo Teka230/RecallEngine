@@ -1,10 +1,10 @@
 # RFC: RECALL-SEMANTIC-1 — Local Semantic Search & Hybrid Retrieval
 
-- **Status** : P2-B COMPLETED (Moteur hybride RRF, Commande CLI `recall embed`, Recherche CLI `--mode`)
+- **Status** : P3 COMPLETED (Recherche Hybride dans l'API REST locale & Visualiseur TUI interactif)
 - **Author** : Teka230 & AI Pair Programmer
 - **Date** : 2026-10-15
 - **Branch** : `feat/semantic-search` (base: `ece4555`, migrations 001 à 003 préservées)
-- **Scope** : Tranche P0 + P1 + P1-E + P2-A + P2-B (Fondations, persistance, indexeur incrémental, moteur hybride RRF, CLI d'indexation et recherche)
+- **Scope** : Tranche P0 + P1 + P1-E + P2-A + P2-B + P3 (Moteur hybride, CLI, API REST /v1/search et TUI)
 
 ---
 
@@ -185,9 +185,19 @@ Sur la requête conceptuelle :
 
 ---
 
-## 6. Prochaines Étapes (P3)
+## 6. Intégration Applicative (P3)
 
-Le jalon P2 étant complet (P2-A + P2-B validés) :
-1. Intégration de la recherche hybride dans l'API REST locale (`GET /v1/search?mode=hybrid`).
-2. Intégration dans le visualiseur terminal TUI (`recall browse`) pour basculer facilement entre recherche lexicale et sémantique.
+### 6.1. API REST Locale : `GET /v1/search?q=...&mode=...`
+L'API REST en lecture seule (`src/commands/read_api_v1.rs`) supporte le paramètre `mode` :
+- `GET /v1/search?q=query&mode=lexical` : Recherche lexicale FTS5 standard (défaut).
+- `GET /v1/search?q=query&mode=hybrid` : Recherche hybride RRF combinant BM25 et KNN vectoriel, avec repli gracieux automatique vers FTS5 si l'index n'est pas encore généré ou si le cache est absent.
+- `GET /v1/search?q=query&mode=semantic` : Recherche vectorielle dense pure via KNN cosinus. Renvoie `400 Bad Request` si la base n'est pas indexée (`Run 'recall embed' first`).
+- **Compatibilité ascendante** : La forme de réponse `PageResponse<SearchResponse>` reste strictement identique et interopérable avec les clients et l'interface Web existants.
+- **Pagination par curseur** : Support transparent du curseur paginé `next_cursor` sur les résultats hybrides et sémantiques.
+
+### 6.2. Visualiseur TUI Terminal : `recall browse`
+L'interface TUI interactive (`src/tui/`) intègre nativement la recherche hybride :
+- **Recherche par défaut** : L'appui sur `/` déclenche par défaut une recherche hybride enrichie, exploitant l'index vectoriel s'il est disponible.
+- **Bascule interactive `[Tab]`** : Dans l'overlay des résultats de recherche (`Overlay::SearchResults`), appuyer sur `[Tab]` bascule instantanément entre `hybrid`, `lexical` et `semantic` avec rafraîchissement immédiat des résultats et affichage du mode actif dans le titre de l'overlay (`Search (hybrid) · "query" · Tab mode · Enter open`).
+- **Robustesse** : Si la base n'a pas été indexée avec `recall embed`, le mode hybride bascule gracieusement sur les résultats lexicaux sans interruption de l'expérience utilisateur.
 

@@ -1,14 +1,14 @@
-# GATES: RECALL-SEMANTIC-1 — Quality Gates & Décision Go/No-Go (Milestones P2-A & P2-B)
+# GATES: RECALL-SEMANTIC-1 — Quality Gates & Décision Go/No-Go (Milestones P2-A, P2-B & P3)
 
-Ce document formalise les critères d'acceptation, les résultats d'audit, la résolution des 4 points de revue technique de P1-E, l'implémentation des jalons **P2-A** (Cycle de vie & Indexeur idempotent pré-inférence) et **P2-B** (Moteur Hybride RRF & Commandes CLI `recall embed` / `recall search --mode`) et l'évaluation globale pour le chantier sémantique de [RecallEngine](README.md).
+Ce document formalise les critères d'acceptation, les résultats d'audit, la résolution des 4 points de revue technique de P1-E, l'implémentation des jalons **P2-A** (Cycle de vie & Indexeur idempotent pré-inférence), **P2-B** (Moteur Hybride RRF & Commandes CLI) et **P3** (API REST locale `/v1/search` & Visualiseur TUI interactif) et l'évaluation globale pour le chantier sémantique de [RecallEngine](README.md).
 
 ---
 
-## 1. Grille d'Évaluation des Gates (P0 + P1 + P1-E + P2-A + P2-B)
+## 1. Grille d'Évaluation des Gates (P0 + P1 + P1-E + P2-A + P2-B + P3)
 
 | Gate | Intitulé | Critères d'Exigence | Résultat Constaté | Statut |
 | :--- | :--- | :--- | :--- | :--- |
-| **G1** | **Non-régression du Coeur** | `cargo test --locked` 100 % vert. 0 régression sur les flux d'import, API, TUI, Web UI. Migrations 001 à 003 intactes. | **127 tests réussis (0 échec)** sur l'ensemble de la suite unitaire et des 18 suites d'intégration. | **VALIDÉ** |
+| **G1** | **Non-régression du Coeur** | `cargo test --locked` 100 % vert. 0 régression sur les flux d'import, API, TUI, Web UI. Migrations 001 à 003 intactes. | **129 tests réussis (0 échec)** sur l'ensemble de la suite unitaire et des 18 suites d'intégration. | **VALIDÉ** |
 | **G2** | **Identité Canonique** | Utiliser `content_blocks.id` (TEXT) et non `rowid` (i64). Préserver `message_id` et citation `ic` stable. | `content_block_id: String` aligné avec `content_blocks.id TEXT PRIMARY KEY`. Schéma migration 004 et requêtes alignés. | **VALIDÉ** |
 | **G3** | **Mode Hors Ligne Hermétique** | Interdiction stricte de tout téléchargement réseau silencieux. Vérification complète du cache (`config.json`, `tokenizer.json`, `model.onnx`). Tests CI hermétiques. | `is_e5_small_cached()` vérifie la validité des métadonnées du modèle ONNX. Tests mock hermétiques en CI; tests FastEmbed réels gardés avec skip gracieux si le cache est absent. | **VALIDÉ (P2-A)** |
 | **G4** | **Idempotence AVANT Inférence** | L'évaluation d'idempotence doit avoir lieu AVANT l'appel au modèle d'embedding. 0 appel d'inférence si le corpus est inchangé. | `SemanticIndexer` compare les empreintes composites `sha256(model_id:chunker_version:chunk_hash)` en base avant inférence. **2 ré-indexations consécutives = 0 appel, 0 embedding calculé.** | **VALIDÉ (P2-A)** |
@@ -22,6 +22,8 @@ Ce document formalise les critères d'acceptation, les résultats d'audit, la r�
 | **G12** | **CLI `recall embed`** | Indexation par lots (`--batch-size`), mode hors ligne strict par défaut, détection du cache, sortie standard claire et sortie JSON (`--json`). | Testé de bout en bout dans `tests/semantic_embed_cli.rs`. Deuxième exécution via CLI confirme 0 recalcul (idempotence pré-inférence). | **VALIDÉ (P2-B)** |
 | **G13** | **CLI `recall search --mode`** | Support des modes `lexical`, `semantic`, `hybrid` avec filtres (`--role`, `--ic-min`, etc.) et enveloppe JSON standard. | Testé dans `tests/semantic_embed_cli.rs`. Enveloppes JSON valides, mode sémantique rejetant proprement les bases non indexées. | **VALIDÉ (P2-B)** |
 | **G14** | **Recherche Conceptuelle Hybride** | Retrouver des messages pertinents sur des requêtes où FTS5 renvoie 0 résultat en raison de divergences de vocabulaire. | Testé dans `test_hybrid_conceptual_retrieval_fastembed` : requête sur l'autorité de l'agent retrouvée en Top-1 (IC 1) alors que FTS5 renvoie 0. | **VALIDÉ (P2-B)** |
+| **G15** | **API REST Locale `/v1/search?mode=...`** | Paramètre `mode` (`lexical`, `semantic`, `hybrid`) dans l'API REST avec curseur paginé et conservation stricte du contrat de réponse. | Testé dans `tests/read_api_v1.rs`. Repli FTS5 automatique en mode hybride sans index, 400 Bad Request explicite en mode sémantique sans index. | **VALIDÉ (P3)** |
+| **G16** | **Visualiseur TUI Terminal (`recall browse`)** | Recherche hybride par défaut sous `/`, avec bascule dynamique en direct par `[Tab]` (`hybrid` ↔ `lexical` ↔ `semantic`) et rafraîchissement d'overlay. | Testé unitairement dans `src/tui/tests.rs` (`test_tui_submit_search_and_mode_toggle`) et visuellement dans `src/tui/overlays.rs`. | **VALIDÉ (P3)** |
 
 ---
 
@@ -95,17 +97,37 @@ La migration déclarative `004_semantic_search.sql` introduit :
 
 ---
 
-## 5. Décision d'Étape : GO P2 VALIDÉ — Jalon P2 Complété
+## 5. Synthèse des Implémentations Appliquées en P3
 
-### **DÉCISION : GO VALIDÉ SANS RÉSERVE POUR L'ENSEMBLE DU JALON P2 (P2-A + P2-B)**
+### (1) API REST Locale `GET /v1/search?mode=...` (`src/commands/read_api_v1.rs`)
+- Paramètre query `mode` optionnel (`lexical`, `semantic`, `hybrid`, défaut `lexical`).
+- Dispatching vers `ReadRepository::search_page_with_mode` avec instanciation du provider FastEmbed si le cache local est présent.
+- Repli gracieux automatique : en mode `hybrid`, bascule silencieuse et transparente sur `search_page_fts5` si la base n'est pas indexée ou si le cache du modèle n'est pas disponible.
+- Gestion d'erreur HTTP rigoureuse : renvoi de `400 Bad Request` en mode `semantic` explicite si la base n'est pas indexée (`semantic index not initialized. Run 'recall embed' first`), évitant toute erreur 500 inattendue.
+- Pagination par curseur préservée pour tous les modes (`next_cursor`), format de réponse JSON `PageResponse<SearchResponse>` strictement compatible avec les consommateurs existants (Web UI, SDKs, scripts).
 
-- **Périmètre P2 validé** :
-  - Cycle de vie vectoriel, migrations déclaratives, enregistrement global `sqlite-vec`.
-  - Indexation incrémentale pré-inférence (0 recalcul sur corpus inchangé).
-  - Moteur hybride RRF avec repli gracieux FTS5 et boosting des correspondances duales.
-  - Commandes CLI `recall embed` et `recall search --mode`.
-  - 100 % de tests réussis, 0 warning clippy, formatage strict respecté.
+### (2) Visualiseur TUI Terminal `recall browse` (`src/tui/`)
+- Recherche hybride activée par défaut lors de la soumission d'une requête avec `/`.
+- Bascule interactive en direct via `[Tab]` dans l'overlay de résultats (`Overlay::SearchResults`) : alterne dynamiquement entre `hybrid`, `lexical` et `semantic` avec ré-exécution immédiate de la recherche sans quitter l'overlay.
+- Indicateur de mode temps réel dans le header de l'overlay (`Search (hybrid) · "query" · Tab mode · Enter open`).
+- Repli gracieux : si la base n'est pas encore indexée, le mode hybride affiche sans accroc les résultats FTS5 sans rompre l'expérience de navigation.
 
-### Prochaine étape recommandée (P3) :
-- Intégration de la recherche hybride dans l'API REST locale (`GET /v1/search?mode=hybrid`).
-- Intégration dans le visualiseur TUI terminal (`recall browse`).
+---
+
+## 6. Décision Finale : GO GLOBAL VALIDÉ SANS RÉSERVE — Initiative RECALL-SEMANTIC-1 Complétée
+
+### **DÉCISION : GO VALIDÉ SANS RÉSERVE POUR L'ENSEMBLE DU CHANTIER RECALL-SEMANTIC-1 (P0 → P3)**
+
+Toutes les exigences architecturales, fonctionnelles, de performance et de qualité de code définies dans la RFC ont été satisfaites :
+
+- **P0 + P1** : Étude comparative rigoureuse (FastEmbed, `multilingual-e5-small`, `sqlite-vec` vs BLOB), fixtures anonymisées, benchmarks M2.
+- **P1-E** : Résolution des 4 points bloquants (identité canonique `content_blocks.id`, mode hors ligne hermétique, déduplication stricte par chunk/bloc, requêtes paramétrées).
+- **P2-A** : Migration 004 déclarative, cycle de vie vectoriel, triggers d'intégrité, indexation incrémentale pré-inférence (0 recalcul sur corpus inchangé), enregistrement global `sqlite-vec`.
+- **P2-B** : Algorithme hybride RRF ($k=60.0$) avec pool élargi et boosting des correspondances duales, commandes CLI `recall embed` et `recall search --mode`.
+- **P3** : Intégration de bout en bout dans l'API REST locale (`GET /v1/search?mode=...`) et dans le visualiseur TUI interactif (`recall browse`) avec bascule `[Tab]`.
+- **Indicateurs de Qualité Globale** :
+  - **129 tests réussis** sur l'ensemble des suites unitaires et d'intégration (`cargo test --locked`).
+  - **0 warning clippy** sous `-D warnings`.
+  - Formatage 100 % conforme (`cargo fmt --check`).
+  - 100 % hors ligne par défaut, 0 fuite réseau, aucune régression sur les migrations 001 à 003 ni sur les flux d'ingestion/TUI/Web UI existants.
+

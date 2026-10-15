@@ -411,11 +411,30 @@ impl App {
         {
             return self.open_reference_input(trimmed, false);
         }
-        let hits = self.repository.search(&query, PAGE_SIZE)?;
+        self.execute_search(query, crate::search::SearchMode::Hybrid)
+    }
+
+    pub fn execute_search(&mut self, query: String, mode: crate::search::SearchMode) -> Result<()> {
+        let mut embedder = if mode != crate::search::SearchMode::Lexical
+            && crate::semantic::embedding::is_e5_small_cached(None)
+        {
+            crate::semantic::embedding::FastEmbedProvider::try_new_offline(None).ok()
+        } else {
+            None
+        };
+        let hits = self.repository.search_with_mode(
+            &query,
+            PAGE_SIZE,
+            mode,
+            embedder
+                .as_mut()
+                .map(|e| e as &mut dyn crate::semantic::EmbeddingProvider),
+        )?;
         self.overlay = Some(Overlay::SearchResults {
             query,
             hits,
             selected: 0,
+            mode,
         });
         Ok(())
     }

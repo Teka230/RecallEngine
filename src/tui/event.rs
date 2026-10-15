@@ -160,14 +160,24 @@ pub fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             query,
             hits,
             mut selected,
+            mode,
         } => match key.code {
             KeyCode::Esc => {}
+            KeyCode::Tab => {
+                let next_mode = match mode {
+                    crate::search::SearchMode::Hybrid => crate::search::SearchMode::Lexical,
+                    crate::search::SearchMode::Lexical => crate::search::SearchMode::Semantic,
+                    crate::search::SearchMode::Semantic => crate::search::SearchMode::Hybrid,
+                };
+                app.execute_search(query, next_mode)?;
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 selected = (selected + 1).min(hits.len().saturating_sub(1));
                 app.overlay = Some(Overlay::SearchResults {
                     query,
                     hits,
                     selected,
+                    mode,
                 });
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -176,6 +186,7 @@ pub fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     query,
                     hits,
                     selected,
+                    mode,
                 });
             }
             KeyCode::Enter => {
@@ -189,6 +200,7 @@ pub fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     query,
                     hits,
                     selected,
+                    mode,
                 });
             }
         },

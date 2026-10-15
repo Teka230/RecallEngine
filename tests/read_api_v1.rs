@@ -170,3 +170,49 @@ async fn search_context_and_reference_resolution_share_the_same_read_shape() {
     assert_eq!(reference_body["message"]["message_id"], message_id);
     assert_eq!(reference_body["stable_reference"], stable_reference);
 }
+
+#[tokio::test]
+async fn search_supports_modes_and_graceful_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("history.sqlite");
+    import_fixture(&db);
+
+    // 1. Explicit mode=lexical works as default
+    let (status, lexical_body) = get(
+        serve::app(db.clone(), None),
+        "/v1/search?q=Hello&mode=lexical&limit=5",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!lexical_body["items"].as_array().unwrap().is_empty());
+
+    // 2. mode=hybrid on unindexed db gracefully falls back to FTS5
+    let (status, hybrid_body) = get(
+        serve::app(db.clone(), None),
+        "/v1/search?q=Hello&mode=hybrid&limit=5",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!hybrid_body["items"].as_array().unwrap().is_empty());
+
+    // 3. mode=semantic on unindexed db returns 400 Bad Request
+    let (status, sem_err) = get(
+        serve::app(db.clone(), None),
+        "/v1/search?q=Hello&mode=semantic&limit=5",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(sem_err
+        .as_str()
+        .unwrap_or_default()
+        .contains("Semantic search index not found"));
+
+    // 4. Invalid mode returns 400 Bad Request
+    let (status, invalid_err) =
+        get(serve::app(db, None), "/v1/search?q=Hello&mode=unknown_mode").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(invalid_err
+        .as_str()
+        .unwrap_or_default()
+        .contains("unsupported mode"));
+}

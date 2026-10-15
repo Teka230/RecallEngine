@@ -76,3 +76,37 @@ fn thread_cache_is_bounded_and_refreshes_lru_order_on_read() {
     assert!(app.thread_cache.contains_key("key-0"));
     assert!(!app.thread_cache.contains_key("key-1"));
 }
+
+#[test]
+fn test_tui_submit_search_and_mode_toggle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("history.sqlite");
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chatgpt-sanitized");
+    run_chatgpt_import(fixture, db.clone(), AssetMode::External, None, false, None).unwrap();
+    let mut app = App::new(ReadRepository::open_read_only(&db).unwrap()).unwrap();
+
+    // 1. Submit search defaults to Hybrid mode
+    app.submit_search("Hello".to_string()).unwrap();
+    match &app.overlay {
+        Some(crate::tui::state::Overlay::SearchResults {
+            query, mode, hits, ..
+        }) => {
+            assert_eq!(query, "Hello");
+            assert_eq!(*mode, crate::search::SearchMode::Hybrid);
+            assert!(!hits.is_empty());
+        }
+        other => panic!("Expected SearchResults overlay, got {:?}", other),
+    }
+
+    // 2. Switch to Lexical mode
+    app.execute_search("Hello".to_string(), crate::search::SearchMode::Lexical)
+        .unwrap();
+    match &app.overlay {
+        Some(crate::tui::state::Overlay::SearchResults { mode, hits, .. }) => {
+            assert_eq!(*mode, crate::search::SearchMode::Lexical);
+            assert!(!hits.is_empty());
+        }
+        other => panic!("Expected SearchResults overlay, got {:?}", other),
+    }
+}

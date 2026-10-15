@@ -40,11 +40,19 @@ pub fn render_overlay(frame: &mut Frame, overlay: &Overlay, area: Rect) {
             query,
             hits,
             selected,
+            mode,
         } => {
+            let mode_str = match mode {
+                crate::search::SearchMode::Hybrid => "hybrid",
+                crate::search::SearchMode::Lexical => "lexical",
+                crate::search::SearchMode::Semantic => "semantic",
+            };
             if hits.is_empty() {
                 frame.render_widget(
-                    Paragraph::new(format!("No results for “{query}”\n\nEsc to close"))
-                        .block(Block::default().title("Search results").borders(Borders::ALL)),
+                    Paragraph::new(format!(
+                        "No results for “{query}” ({mode_str})\n\nTab switch mode · Esc to close"
+                    ))
+                    .block(Block::default().title("Search results").borders(Borders::ALL)),
                     area,
                 );
                 return;
@@ -69,9 +77,12 @@ pub fn render_overlay(frame: &mut Frame, overlay: &Overlay, area: Rect) {
                 .collect::<Vec<_>>();
             let capped = hits.len() >= PAGE_SIZE;
             let overlay_title = if capped {
-                format!("Search · “{query}” · {} shown · more may exist", hits.len())
+                format!(
+                    "Search ({mode_str}) · “{query}” · {} shown · Tab mode · more may exist",
+                    hits.len()
+                )
             } else {
-                format!("Search · “{query}” · Enter open")
+                format!("Search ({mode_str}) · “{query}” · Tab mode · Enter open")
             };
             let mut state = ListState::default();
             state.select(Some(*selected));

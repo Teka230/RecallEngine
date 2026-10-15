@@ -76,6 +76,7 @@ pub enum Overlay {
         query: String,
         hits: Vec<SearchHit>,
         selected: usize,
+        mode: crate::search::SearchMode,
     },
 }
 impl Focus {
