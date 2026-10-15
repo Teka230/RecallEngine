@@ -234,6 +234,8 @@ impl<'a> HybridSearchService<'a> {
             JOIN messages m ON c.message_id = m.id
             JOIN conversations conv ON m.conversation_id = conv.id
             WHERE v.embedding MATCH ?1 AND k = ?2
+              AND m.is_active = 1
+              AND conv.is_active = 1
             ORDER BY v.distance ASC",
         )?;
 

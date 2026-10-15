@@ -103,6 +103,7 @@ SELECT COUNT(DISTINCT m.id)
 FROM content_blocks_fts
 JOIN content_blocks cb ON content_blocks_fts.rowid = cb.rowid
 JOIN messages m ON cb.message_id = m.id
+JOIN conversations c ON m.conversation_id = c.id
 WHERE {}
                 ",
                 where_clause
@@ -122,7 +123,11 @@ WHERE {}
     }
 
     fn build_where_clause(&self, query: &SearchQuery) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
-        let mut clauses = vec!["content_blocks_fts MATCH ?".to_string()];
+        let mut clauses = vec![
+            "content_blocks_fts MATCH ?".to_string(),
+            "m.is_active = 1".to_string(),
+            "c.is_active = 1".to_string(),
+        ];
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(query.text.clone())];
 
         if let Some(role) = &query.role {

@@ -40,6 +40,7 @@ pub struct SemanticIndexer<'a> {
     conn: &'a Connection,
     chunker_options: ChunkerOptions,
     batch_size: usize,
+    prune: bool,
 }
 
 impl<'a> SemanticIndexer<'a> {
@@ -49,6 +50,7 @@ impl<'a> SemanticIndexer<'a> {
             conn,
             chunker_options: ChunkerOptions::default(),
             batch_size: 32,
+            prune: true,
         }
     }
 
@@ -58,12 +60,19 @@ impl<'a> SemanticIndexer<'a> {
             conn,
             chunker_options,
             batch_size: 32,
+            prune: true,
         }
     }
 
     /// Configure batch size for embedding inference.
     pub fn with_batch_size(mut self, batch_size: usize) -> Self {
         self.batch_size = batch_size.max(1);
+        self
+    }
+
+    /// Configure whether obsolete blocks should be pruned during indexing.
+    pub fn with_prune(mut self, prune: bool) -> Self {
+        self.prune = prune;
         self
     }
 
@@ -77,9 +86,12 @@ impl<'a> SemanticIndexer<'a> {
                 cb.text_content
             FROM content_blocks cb
             JOIN messages m ON cb.message_id = m.id
+            JOIN conversations c ON m.conversation_id = c.id
             WHERE cb.text_content IS NOT NULL
               AND LENGTH(TRIM(cb.text_content)) > 0
               AND m.role IN ('user', 'assistant')
+              AND m.is_active = 1
+              AND c.is_active = 1
             ORDER BY m.ic ASC, cb.ordinal ASC",
         )?;
 
@@ -217,19 +229,21 @@ impl<'a> SemanticIndexer<'a> {
             }
         }
 
-        // 5. Prune obsolete blocks from vector index
+        // 5. Prune obsolete blocks from vector index (if pruning is enabled)
         let mut pruned_blocks = 0;
-        let mut existing_block_stmt = self
-            .conn
-            .prepare("SELECT DISTINCT content_block_id FROM semantic_vec_chunks")?;
-        let existing_block_ids: Vec<String> = existing_block_stmt
-            .query_map([], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if self.prune {
+            let mut existing_block_stmt = self
+                .conn
+                .prepare("SELECT DISTINCT content_block_id FROM semantic_vec_chunks")?;
+            let existing_block_ids: Vec<String> = existing_block_stmt
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        for old_block_id in existing_block_ids {
-            if !eligible_block_ids.contains(&old_block_id) {
-                store.sync_block_chunks(&old_block_id, &[], &[])?;
-                pruned_blocks += 1;
+            for old_block_id in existing_block_ids {
+                if !eligible_block_ids.contains(&old_block_id) {
+                    store.sync_block_chunks(&old_block_id, &[], &[])?;
+                    pruned_blocks += 1;
+                }
             }
         }
 
@@ -259,6 +273,12 @@ impl<'a> SemanticIndexer<'a> {
              VALUES ('total_indexed_chunks', ?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
              ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
             params![total_chunks.to_string()],
+        )?;
+        self.conn.execute(
+            "INSERT INTO semantic_index_meta (key, value, updated_at)
+             VALUES ('last_indexed_at', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            [],
         )?;
 
         let duration_ms = start.elapsed().as_millis();

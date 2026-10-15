@@ -119,7 +119,16 @@ The context uses the same branch semantics and ordering as the requested message
 
 ## `GET /v1/search`
 
-Query parameters are `q`, `limit`, and `cursor`. Results are message-level hits with the conversation identity, excerpt, model metadata, node/parent branch information, visibility classification, asset references, and stable references when the hit is a trusted public-role message.
+Query parameters:
+- `q` — search term or query string (required);
+- `mode` — retrieval mode (optional, defaults to `lexical`):
+  - `hybrid` — Reciprocal Rank Fusion (RRF, $k=60.0$) combining FTS5 BM25 lexical search and `sqlite-vec` cosine KNN dense retrieval. Automatically falls back gracefully to lexical search if the database has not been embedded with `recall embed` or if local model weights are absent;
+  - `lexical` — standard SQLite FTS5 BM25 token matching with substring fallback;
+  - `semantic` — pure dense vector similarity search via `sqlite-vec`. Returns `400 Bad Request` if the database is not indexed or model weights are missing.
+- `limit` — page size (optional, default 100, max 500);
+- `cursor` — opaque cursor for pagination (`next_cursor`).
+
+Results are message-level hits with conversation identity, excerpt, model metadata, node/parent branch information, visibility classification, asset references, and stable references when the hit is a trusted public-role message. Cursor pagination is supported across all retrieval modes.
 
 ## `GET /v1/references/{reference}`
 

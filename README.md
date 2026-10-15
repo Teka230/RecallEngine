@@ -2,16 +2,17 @@
 
 **A local, privacy-first Rust CLI for turning a ChatGPT export into a durable SQLite history.**
 
-RecallEngine imports a ChatGPT data export without sending it anywhere. It preserves the conversation graph, message IDs, source JSON, attachment references, and branch structure in a canonical local database you can verify, inspect, search, or export to the flat SQLite format used by GPTExtractor and ExploGPT. The result is an addressable local message repository with a stable reference scheme—not an intelligent context-selection or semantic-ranking engine.
+RecallEngine imports a ChatGPT data export without sending it anywhere. It preserves the conversation graph, message IDs, source JSON, attachment references, and branch structure in a canonical local database you can verify, inspect, search, embed with local dense vectors, or export to the flat SQLite format used by GPTExtractor and ExploGPT. The result is an addressable local message repository with a stable reference scheme and privacy-first hybrid search (lexical + semantic).
 
 > [!WARNING]
-> **Alpha software — local use only.** RecallEngine currently supports ChatGPT exports only. It has a local read-only web UI, but no embeddings, cloud sync, profile import, authentication, or TLS. It is not published on crates.io yet; build it from this repository.
+> **Alpha software — local use only.** RecallEngine currently supports ChatGPT exports only. It features local semantic indexing and hybrid search (via `sqlite-vec` and `fastembed`), a terminal visualizer TUI, and a local read-only web UI, but no cloud sync, profile import, authentication, or TLS. It is not published on crates.io yet; build it from this repository.
 
 ## Why RecallEngine?
 
 - **Local by design** — the CLI works on files and SQLite databases on your machine.
 - **Faithful imports** — keeps source message IDs, conversation branches, content blocks, attachment references, feedback, and supported ChatGPT sidecars.
 - **Stable local references** — each imported message receives a durable integer `IC` (Internal Citation), used as a compact human/machine handle for the local SQLite database. Existing ICs are preserved on re-import.
+- **Local hybrid & semantic search** — combine FTS5 BM25 lexical search with offline `intfloat/multilingual-e5-small` vector embeddings stored in SQLite via `sqlite-vec`. Incremental indexing evaluates content fingerprints to avoid recalculating embeddings on unchanged messages.
 - **Inspectable output** — validate the import, print JSON statistics, use the optional local read API, or export a flat legacy SQLite table.
 - **Lightweight Rust CLI** — a focused command-line tool rather than a hosted service.
 
@@ -195,6 +196,42 @@ Resolve one message or request a bounded context window:
 
 Use `/` to search, `i` to jump by IC, message ID, or composite reference, `v` to switch between the current conversation branch and all active messages in ascending IC order, `b` to choose a branch, `t` to reveal technical messages, `y` to copy the IC+message-ID pair, and `?` for complete keyboard help. Moving with `j/k` schedules the selected conversation after a 180 ms debounce; `Enter` loads it immediately when pending and focuses Reader. Conversation pages and search results are limited to 150, All messages to 500, and partial views are labeled in the interface. Technical messages remain inspectable but have no public reference. `browse` never writes to the database or sends data over the network.
 
+### Semantic indexing and hybrid search
+
+RecallEngine includes local vector indexing and hybrid search powered by `sqlite-vec` and `fastembed` (`intfloat/multilingual-e5-small`, 384 dimensions).
+
+#### 1. Generate semantic embeddings
+
+```bash
+# Index with strict offline mode (requires pre-cached weights)
+./target/release/recall embed --db /path/to/history.sqlite
+
+# Or allow initial model download into local cache
+./target/release/recall embed --db /path/to/history.sqlite --allow-download
+```
+
+Key features:
+- **Pre-inference idempotence**: Evaluates chunk fingerprints (`sha256(model:version:chunk)`) before calling the embedding model. Re-indexing an unchanged database computes **0 embeddings**.
+- **Atomic updates & pruning**: Updates chunks within SQLite transactions and prunes obsolete chunks (controllable via `--prune`).
+- **Structured output**: Use `--json` for automation and pipeline integration.
+
+#### 2. Query with search modes
+
+```bash
+# Default lexical search (FTS5 BM25)
+./target/release/recall search --db /path/to/history.sqlite "quantum computing" --mode lexical
+
+# Hybrid search (RRF fusing BM25 and vector distance)
+./target/release/recall search --db /path/to/history.sqlite "quantum computing" --mode hybrid
+
+# Pure dense vector similarity search
+./target/release/recall search --db /path/to/history.sqlite "quantum computing" --mode semantic
+```
+
+- **In the terminal (`recall browse`)**: Press `/` to search (defaults to `hybrid`), and press `[Tab]` to cycle dynamically between `hybrid`, `lexical`, and `semantic` modes with live result updates.
+- **In the Web UI**: Use the `Hybrid` / `Lexical` / `Semantic` toggle pills next to the search input.
+- **Graceful fallback**: If the database has not been embedded yet or if model weights are absent, `hybrid` mode automatically falls back to standard FTS5 without error.
+
 ## Export for GPTExtractor or ExploGPT
 
 Create the flat SQLite `messages` table expected by GPTExtractor or ExploGPT:
@@ -266,7 +303,7 @@ resolution. The `/api` routes above remain the compatibility surface.
 > [!CAUTION]
 > **Your history is extremely sensitive.** The API has **no authentication and no TLS**. Keep its default loopback binding (`127.0.0.1`). Binding a non-loopback address requires `--allow-remote` and still leaves the API unprotected — never expose it to your LAN, the internet, a reverse proxy, or untrusted users.
 
-Search uses SQLite FTS5 for token-prefix matching, with a `LIKE` fallback for literal text. It is designed for inspection, not semantic or embedding-based retrieval.
+Search supports lexical FTS5 matching with substring fallback (`mode=lexical`), dense vectors via `sqlite-vec` (`mode=semantic`), and Reciprocal Rank Fusion (`mode=hybrid`, default in TUI and Web UI).
 
 The reference endpoints (`/api/messages/by-ic/...`, `/by-message-id/...`, and `/by-reference`) and `show` provide the human-facing filtered surface: only active `user`/`assistant` messages are returned. Their JSON keeps the legacy `id` field and adds the equivalent `messageId` plus the human-readable `reference`. The conversation, graph, and search endpoints remain inspection surfaces: they may include technical `system` and `tool` rows, with `ic: null`, so consumers that need a faithful view of an imported conversation should use them instead of the reference endpoints.
 

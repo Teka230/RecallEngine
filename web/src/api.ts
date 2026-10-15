@@ -8,6 +8,7 @@ import type {
   Page,
   ReferenceResponse,
   SearchHit,
+  SearchMode,
   ViewMode,
 } from "./types";
 
@@ -74,9 +75,10 @@ export const api = {
     );
   },
 
-  search: (query: string, cursor?: string | null) => {
+  search: (query: string, cursor?: string | null, mode?: SearchMode) => {
     const params = pageQuery(60, cursor);
     params.set("q", query);
+    if (mode) params.set("mode", mode);
     return requestJson<Page<SearchHit>>(`/search?${params}`);
   },
 

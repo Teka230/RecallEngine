@@ -59,7 +59,9 @@ pub fn run_embed(options: EmbedOptions) -> Result<()> {
     }
 
     // 4. Run indexer
-    let indexer = SemanticIndexer::new(db.connection()).with_batch_size(options.batch_size);
+    let indexer = SemanticIndexer::new(db.connection())
+        .with_batch_size(options.batch_size)
+        .with_prune(options.prune);
 
     let stats = indexer.index_all(&mut embedder)?;
     let total_elapsed = start.elapsed();

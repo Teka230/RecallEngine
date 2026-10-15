@@ -110,7 +110,12 @@ La migration déclarative `004_semantic_search.sql` introduit :
 - Recherche hybride activée par défaut lors de la soumission d'une requête avec `/`.
 - Bascule interactive en direct via `[Tab]` dans l'overlay de résultats (`Overlay::SearchResults`) : alterne dynamiquement entre `hybrid`, `lexical` et `semantic` avec ré-exécution immédiate de la recherche sans quitter l'overlay.
 - Indicateur de mode temps réel dans le header de l'overlay (`Search (hybrid) · "query" · Tab mode · Enter open`).
-- Repli gracieux : si la base n'est pas encore indexée, le mode hybride affiche sans accroc les résultats FTS5 sans rompre l'expérience de navigation.
+### (3) Consolidation Finale & Alignement Global (P3-Consolidation)
+- **Dédoublonnage CLI sémantique** : Pool de candidats élargi (`fetch_limit = max(50, (limit + offset) * 3)`) et dédoublonnage strict par `message_id` dans `recall search --mode semantic` (`src/commands/search.rs`), aligné avec le comportement de `ReadRepository` et du moteur hybride.
+- **Support effectif de `--prune` et métadonnées** : Configuration de l'élagage via `SemanticIndexer::with_prune(options.prune)` et persistance de la métadonnée d'horodatage `last_indexed_at` dans `semantic_index_meta`.
+- **Filtres d'intégrité `is_active = 1`** : Filtrage systématique des messages et conversations actifs (`m.is_active = 1 AND c.is_active = 1`) lors de l'indexation (`fetch_eligible_blocks`), de la recherche vectorielle (`fetch_vector_candidates`) et de la recherche FTS5 (`build_where_clause` et `count_sql`).
+- **Interface Web React (`web/`)** : Intégration d'un sélecteur à 3 modes (`Hybrid` / `Lexical` / `Semantic`) dans la barre de recherche globale et affichage du mode actif dans le panneau des résultats avec ré-exécution immédiate lors du changement de mode.
+- **Documentation publique** : Mise à jour de `README.md` (retrait des mentions obsolètes "no embeddings", documentation de `recall embed`, `recall search --mode`, TUI et Web UI) et de `READ-API-V1.md` (documentation de `GET /v1/search?mode=...`).
 
 ---
 

@@ -1,4 +1,5 @@
 export type ViewMode = "current-thread" | "all-active";
+export type SearchMode = "hybrid" | "lexical" | "semantic";
 
 export interface Page<T> {
   items: T[];

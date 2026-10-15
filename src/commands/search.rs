@@ -133,13 +133,18 @@ fn run_search_inner(
             }
             let mut embedder = FastEmbedProvider::try_new_offline(None)?;
             let query_vector = embedder.embed_query(&query.text)?;
-            let candidates = hybrid_service.fetch_vector_candidates(
-                &query_vector,
-                (limit + offset) as usize,
-                &query,
-            )?;
-            let total_count = candidates.len();
-            let paged: Vec<crate::search::SearchMatch> = candidates
+            let fetch_limit = std::cmp::max(50, (limit + offset) as usize * 3);
+            let candidates =
+                hybrid_service.fetch_vector_candidates(&query_vector, fetch_limit, &query)?;
+            let mut deduped_candidates = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for c in candidates {
+                if seen.insert(c.message_id.clone()) {
+                    deduped_candidates.push(c);
+                }
+            }
+            let total_count = deduped_candidates.len();
+            let paged: Vec<crate::search::SearchMatch> = deduped_candidates
                 .into_iter()
                 .skip(offset as usize)
                 .take(limit as usize)
@@ -153,7 +158,7 @@ fn run_search_inner(
                     role: c.role,
                     created_at: c.created_at,
                     snippet: crate::search::snippet::parse_snippet(&c.text),
-                    rank: (i + 1) as f64,
+                    rank: (offset as usize + i + 1) as f64,
                 })
                 .collect();
 

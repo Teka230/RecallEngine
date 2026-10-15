@@ -29,9 +29,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .brand-mark { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 800; }
 .brand { display: block; font-size: 15px; }
 .subtitle, .reader-meta, .muted { color: var(--muted); font-size: 12px; }
-.search-form { display: flex; gap: 8px; }
+.search-form { display: flex; gap: 8px; align-items: center; }
 .search-form input { flex: 1; min-width: 0; background: #0b1118; border: 1px solid var(--border); color: var(--text); border-radius: 9px; padding: 10px 12px; }
-.search-form button, .secondary, .load-more, .status-banner button { border: 1px solid var(--border); background: var(--panel-2); border-radius: 8px; padding: 9px 12px; cursor: pointer; }
+.search-form > button, .secondary, .load-more, .status-banner button { border: 1px solid var(--border); background: var(--panel-2); border-radius: 8px; padding: 9px 12px; cursor: pointer; }
+.search-mode-segmented { display: flex; gap: 2px; padding: 2px; background: #0b1118; border: 1px solid var(--border); border-radius: 8px; }
+.search-mode-segmented button { border: 0; background: transparent; border-radius: 6px; padding: 6px 9px; font-size: 11px; cursor: pointer; color: var(--muted); }
+.search-mode-segmented button.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
+.search-mode-segmented button:hover:not(.active) { color: var(--text); }
 button:disabled { opacity: .5; cursor: default; }
 .meta-strip { justify-self: end; display: flex; flex-direction: column; align-items: flex-end; gap: 5px; min-width: 0; }
 .badge { font-size: 10px; font-weight: 800; letter-spacing: .08em; color: #9fe7bb; background: #153322; border: 1px solid #28563a; border-radius: 999px; padding: 4px 7px; }

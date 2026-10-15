@@ -20,6 +20,7 @@ import type {
   Message,
   MetaResponse,
   SearchHit,
+  SearchMode,
   ViewMode,
 } from "./types";
 
@@ -80,6 +81,7 @@ export function App() {
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
   const [searchCursor, setSearchCursor] = useState<string | null>(null);
+  const [searchMode, setSearchMode] = useState<SearchMode>("hybrid");
   const [status, setStatus] = useState<StatusState>(initialStatus);
   const messageRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -186,9 +188,10 @@ export function App() {
   );
 
   const runLookup = useCallback(
-    async (raw: string) => {
+    async (raw: string, overrideMode?: SearchMode) => {
       const lookup = classifyLookup(raw);
       if (!lookup.value) return;
+      const activeMode = overrideMode ?? searchMode;
       setStatus({ phase: "loading", message: "Searching…" });
       try {
         if (lookup.kind === "reference") {
@@ -220,7 +223,7 @@ export function App() {
           return;
         }
 
-        const page = await api.search(lookup.value);
+        const page = await api.search(lookup.value, null, activeMode);
         setSearchTerm(lookup.value);
         setSearchResults(page.items);
         setSearchCursor(page.next_cursor);
@@ -230,12 +233,20 @@ export function App() {
         showError(error, "Nothing matched that lookup.");
       }
     },
-    [openMessage, showError],
+    [openMessage, searchMode, showError],
   );
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
     void runLookup(searchInput);
+  };
+
+  const handleModeChange = (nextMode: SearchMode) => {
+    if (nextMode === searchMode) return;
+    setSearchMode(nextMode);
+    if (searchTerm && leftMode === "search") {
+      void runLookup(searchTerm, nextMode);
+    }
   };
 
   const changeView = async (nextView: ViewMode) => {
@@ -314,7 +325,7 @@ export function App() {
   const loadMoreSearch = async () => {
     if (!searchCursor || !searchTerm) return;
     try {
-      const page = await api.search(searchTerm, searchCursor);
+      const page = await api.search(searchTerm, searchCursor, searchMode);
       setSearchResults((current) => [...current, ...page.items]);
       setSearchCursor(page.next_cursor);
     } catch (error) {
@@ -361,6 +372,32 @@ export function App() {
             autoComplete="off"
             spellCheck={false}
           />
+          <div className="search-mode-segmented" role="radiogroup" aria-label="Search mode">
+            <button
+              type="button"
+              className={searchMode === "hybrid" ? "active" : ""}
+              onClick={() => handleModeChange("hybrid")}
+              title="Hybrid search (BM25 + Semantic RRF)"
+            >
+              Hybrid
+            </button>
+            <button
+              type="button"
+              className={searchMode === "lexical" ? "active" : ""}
+              onClick={() => handleModeChange("lexical")}
+              title="Lexical search (FTS5)"
+            >
+              Lexical
+            </button>
+            <button
+              type="button"
+              className={searchMode === "semantic" ? "active" : ""}
+              onClick={() => handleModeChange("semantic")}
+              title="Semantic search (Vectors)"
+            >
+              Semantic
+            </button>
+          </div>
           <button type="submit" disabled={!searchInput.trim() || status.phase === "loading"}>Search</button>
         </form>
 
@@ -379,7 +416,7 @@ export function App() {
               <button className={leftMode === "conversations" ? "active" : ""} onClick={() => setLeftMode("conversations")}>Conversations</button>
               <button className={leftMode === "search" ? "active" : ""} onClick={() => setLeftMode("search")}>Search</button>
             </div>
-            <span className="count-label">{leftMode === "conversations" ? conversations.length : searchResults.length}</span>
+            <span className="count-label">{leftMode === "conversations" ? conversations.length : `${searchResults.length} (${searchMode})`}</span>
           </div>
 
           <div className="list-scroll">
