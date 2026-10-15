@@ -39,14 +39,16 @@ struct EligibleBlock {
 pub struct SemanticIndexer<'a> {
     conn: &'a Connection,
     chunker_options: ChunkerOptions,
+    batch_size: usize,
 }
 
 impl<'a> SemanticIndexer<'a> {
-    /// Create a new indexer with default chunking parameters.
+    /// Create a new indexer with default chunking parameters and batch size 32.
     pub fn new(conn: &'a Connection) -> Self {
         Self {
             conn,
             chunker_options: ChunkerOptions::default(),
+            batch_size: 32,
         }
     }
 
@@ -55,7 +57,14 @@ impl<'a> SemanticIndexer<'a> {
         Self {
             conn,
             chunker_options,
+            batch_size: 32,
         }
+    }
+
+    /// Configure batch size for embedding inference.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size.max(1);
+        self
     }
 
     /// Retrieve eligible text content blocks from messages with user/assistant roles.
@@ -190,7 +199,11 @@ impl<'a> SemanticIndexer<'a> {
                 }
             }
 
-            let all_vectors = embedder.embed_passages(&flat_texts)?;
+            let mut all_vectors = Vec::with_capacity(flat_texts.len());
+            for chunk_batch in flat_texts.chunks(self.batch_size) {
+                let batch_vectors = embedder.embed_passages(chunk_batch)?;
+                all_vectors.extend(batch_vectors);
+            }
             embeddings_computed = flat_texts.len();
 
             // Sync each pending block atomically

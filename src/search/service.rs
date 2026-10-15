@@ -54,7 +54,7 @@ impl<'a> SearchService<'a> {
 
 /// Escapes a simple query into a safe FTS5 MATCH query.
 /// Example: `moteur de recherche` -> `"moteur" AND "de" AND "recherche"`
-fn escape_fts5_simple(text: &str) -> String {
+pub fn escape_fts5_simple(text: &str) -> String {
     let terms: Vec<String> = text
         .split_whitespace()
         .map(|term| {

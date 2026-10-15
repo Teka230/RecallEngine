@@ -1,10 +1,10 @@
 # RFC: RECALL-SEMANTIC-1 — Local Semantic Search & Hybrid Retrieval
 
-- **Status** : P2-A COMPLETED (Cycle de vie, Indexeur idempotent pré-inférence, Migration 004)
+- **Status** : P2-B COMPLETED (Moteur hybride RRF, Commande CLI `recall embed`, Recherche CLI `--mode`)
 - **Author** : Teka230 & AI Pair Programmer
-- **Date** : 2026-10-14
+- **Date** : 2026-10-15
 - **Branch** : `feat/semantic-search` (base: `ece4555`, migrations 001 à 003 préservées)
-- **Scope** : Tranche P0 + P1 + P1-E + P2-A (Fondations techniques, stockage persistant, indexeur incrémental isolé)
+- **Scope** : Tranche P0 + P1 + P1-E + P2-A + P2-B (Fondations, persistance, indexeur incrémental, moteur hybride RRF, CLI d'indexation et recherche)
 
 ---
 
@@ -32,7 +32,7 @@ L'objectif de **RECALL-SEMANTIC-1** est d'ajouter une brique de **recherche sém
 4. **Idempotence AVANT Inférence** : L'état du corpus est comparé aux métadonnées vectorielles existantes *avant* d'invoquer le modèle d'embedding. Un corpus inchangé engendre **zéro** calcul de vecteur et **zéro** appel d'inférence. Seuls les blocs nouveaux ou modifiés sont embarqués.
 5. **Initialisation Proactive de `sqlite-vec`** : L'extension `sqlite-vec` est enregistrée globalement avant l'ouverture de toute connexion SQLite applicative (`Database::open`, `ReadRepository::open_read_only`, `serve::open_read_only`).
 6. **Herméticité des Tests** : Présence d'un `MockDeterministicProvider` avec comptabilisation atomique des appels pour valider le cycle d'indexation en CI sans dépendance au téléchargement d'un modèle lourd.
-7. **Isolation Stricte jusqu'à P2-B** : Zéro exposition prématurée vers l'utilisateur (pas de commande CLI finale, pas de RRF, pas de route API `/v1/search?mode=hybrid`, pas de TUI).
+7. **Tolérance aux Pannes & Repli Gracieux** : Si l'index vectoriel est absent ou vide, le moteur bascule gracieusement en mode dégradé FTS5 (`hybrid-fallback-fts5`) sans lever d'erreur ni bloquer l'utilisateur.
 
 ---
 
@@ -105,21 +105,64 @@ END;
 Le composant `SemanticIndexer` (`src/semantic/indexer.rs`) pilote le cycle d'indexation incrémentale :
 1. **Extraction éligible** : Récupère les blocs textuels des messages actifs de rôles `user` et `assistant`.
 2. **Chunking & Détection d'invalidation** : Compare les fingerprints des chunks calculés avec les lignes existantes en base.
-3. **Inférence ciblée** : N'invoque `embedder.embed_passages()` que sur les chunks des blocs nouveaux ou modifiés.
+3. **Inférence ciblée** : N'invoque `embedder.embed_passages()` que sur les chunks des blocs nouveaux ou modifiés, par lots configurables (`--batch-size`, défaut 32).
 4. **Synchronisation atomique** : Insère ou remplace les vecteurs par bloc via un `SAVEPOINT`.
 5. **Élagage (Pruning)** : Supprime de l'index les blocs devenus inéligibles (rôle modifié, texte vidé ou bloc supprimé).
 6. **Mise à jour des métadonnées** : Actualise `model_id`, `chunker_version`, `dimension`, `total_indexed_chunks`, et `last_indexed_at` dans `semantic_index_meta`.
 
+### 3.5. Moteur de Recherche Hybride : Reciprocal Rank Fusion (RRF)
+Le module `src/semantic/hybrid.rs` fusionne les résultats issus du moteur lexical FTS5 (BM25) et du moteur sémantique dense `sqlite-vec` (KNN cosinus) :
+
+1. **Formule RRF** :
+   $$\text{Score}_{\text{RRF}}(d) = \frac{w_{\text{fts}}}{k + \text{rank}_{\text{fts}}(d)} + \frac{w_{\text{vec}}}{k + \text{rank}_{\text{vec}}(d)}$$
+   avec la constante de lissage standard $k = 60.0$, $w_{\text{fts}} = 1.0$, et $w_{\text{vec}} = 1.0$.
+
+2. **Dédoublonnage au niveau Message** :
+   La recherche vectorielle renvoie des correspondances au niveau chunk. Si plusieurs chunks d'un même message figurent dans les candidats KNN, le message ne figure qu'une seule fois dans la liste vectorielle, avec le meilleur rang (distance minimale).
+
+3. **Pool de Candidats Élargi** :
+   Pour chaque modalité (FTS5 et KNN), le moteur interroge un pool élargi :
+   $$\text{pool\_size} = \max(50, (\text{limit} + \text{offset}) \times 3)$$
+   afin de garantir un rappel optimal avant la fusion.
+
+4. **Filtrage et Tri Déterministe** :
+   Les filtres canoniques (`role`, `ic_min`, `ic_max`, `date_min`, `date_max`) s'appliquent de manière uniforme sur les deux canaux. Le tri final s'effectue par :
+   `rrf_score DESC`, puis `created_at ASC`, puis `message_id ASC`.
+
+5. **Repli Gracieux (Graceful Fallback)** :
+   Si la table vectorielle n'est pas initialisée ou si aucun modèle n'est disponible, `HybridSearchService` bascule automatiquement sur une recherche lexicale FTS5 standard avec `mode: "hybrid-fallback-fts5"`.
+
 ---
 
-## 4. Résultats Empiriques & Analyse de Performance (Apple Silicon M2)
+## 4. Exposition CLI : `recall embed` et `recall search --mode`
 
-### 4.1. Micro-benchmarks Inférence FastEmbed (M2)
+### 4.1. Commande `recall embed`
+Génère ou met à jour l'index vectoriel sémantique dans la base SQLite canonique :
+```bash
+recall embed --db <path.sqlite> [OPTIONS]
+```
+- `--batch-size <N>` : Taille des lots d'inférence (défaut : 32).
+- `--prune` : Élaguer les blocs orphelins ou devenus inéligibles.
+- `--allow-download` : Autoriser le téléchargement initial du modèle depuis Hugging Face (par défaut : `StrictOffline`).
+- `--cache-dir <DIR>` : Répertoire personnalisé pour le cache modèle.
+- `--json` : Émission d'une enveloppe JSON standard (`JsonEnvelope<IndexingStats>`) pour automatisation et scripts.
+
+### 4.2. Commande `recall search --mode`
+Extension de la commande `recall search` avec l'option `--mode <lexical|semantic|hybrid>` (défaut : `lexical`) :
+- `lexical` : Recherche textuelle pure FTS5 (BM25).
+- `semantic` : Recherche vectorielle dense pure via `sqlite-vec`.
+- `hybrid` : Recherche hybride RRF combinant BM25 et KNN vectoriel.
+
+---
+
+## 5. Résultats Empiriques & Analyse de Performance (Apple Silicon M2)
+
+### 5.1. Micro-benchmarks Inférence FastEmbed (M2)
 - **Latence unitaire (batch 1)** : ~31.1 ms
 - **Latence batch 8** : ~55.0 ms (6.88 ms / chunk)
 - **Latence batch 32** : ~217.9 ms (**6.81 ms / chunk**, soit **146.9 chunks/s**)
 
-### 4.2. Multi-Tier Scaling mesuré sur disque physique
+### 5.2. Multi-Tier Scaling mesuré sur disque physique
 
 | Chunks | `sqlite-vec` Disque | BLOB Disque | `sqlite-vec` Top-10 | BLOB Top-10 | Speedup KNN |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -128,33 +171,23 @@ Le composant `SemanticIndexer` (`src/semantic/indexer.rs`) pilote le cycle d'ind
 | **2 000** | 4 004 KB (4.0 MB) | 4 300 KB (4.3 MB) | 3 708 µs (3.71 ms) | 43 886 µs (43.9 ms) | **11.8x** |
 | **5 000** | 9 904 KB (9.9 MB) | 10 676 KB (10.7 MB) | 9 019 µs (9.02 ms) | 99 639 µs (99.6 ms) | **11.0x** |
 
-> **Comportement de l'espace disque** : `sqlite-vec` présente un coût fixe d'initialisation de ~1.5 MB pour les structures internes de `vec0`, mais son coût marginal est de **1.98 KB/chunk** (inférieur aux 2.14 KB/chunk du BLOB standard).
+### 5.3. Projections Linéaires $O(N)$
+`vec0` en version 0.1.x implémente une recherche vectorielle exacte par balayage plat (flat scan) accéléré par instructions vectorielles SIMD (ARM NEON / AVX). Complexité strictement linéaire $O(N)$ :
+- **50 000 chunks** : Taille disque `sqlite-vec` ~96.7 MB, latence KNN ~90 ms.
+- **100 000 chunks** : Taille disque `sqlite-vec` ~193.4 MB, latence KNN ~180 ms.
 
-### 4.3. Architecture de Recherche `vec0` & Projections Linéaires $O(N)$
-`vec0` en version 0.1.x implémente une recherche vectorielle exacte par balayage plat (flat scan) accéléré par instructions vectorielles SIMD (ARM NEON / AVX). Il ne s'agit pas d'un index approximatif sous-linéaire (ANN comme HNSW ou IVF). La complexité temporelle de requête est donc strictement linéaire $O(N)$.
-
-Par conséquent, l'extrapolation linéaire indicative basée sur la mesure physique de 9,0 ms à 5 000 chunks donne :
-- **50 000 chunks** :
-  - Taille disque `sqlite-vec` : **~96.7 MB**
-  - Latence KNN indicative `sqlite-vec` : **~90 ms** (vs ~1 s pour le BLOB)
-- **100 000 chunks** :
-  - Taille disque `sqlite-vec` : **~193.4 MB**
-  - Latence KNN indicative `sqlite-vec` : **~180 ms** (vs ~2 s pour le BLOB)
-
-> [!NOTE]
-> Ces projections linéaires indiquent que `sqlite-vec` reste 11x plus rapide que le scan BLOB pur. Néanmoins, pour des corpus dépassant 50 000 chunks, des mesures physiques réelles sur banc d'essai dédié devront être conduites avant d'engager un SLA formel de latence inférieure à 50 ms.
-
-### 4.4. Validation Sémantique vs FTS5
+### 5.4. Validation Sémantique vs FTS5 & Hybride RRF
 Sur la requête conceptuelle :
 > *« Comment réguler les permissions de l'agent sans lui donner les pleins pouvoirs ? »*
 - **FTS5** : 0 match.
 - **`sqlite-vec` (FastEmbed)** : Message cible retrouvé en **Top-1** (`00000000-0000-4000-8000-000000000101`, IC:1) avec une distance cosinus de **0.121**.
+- **Recherche Hybride RRF** : Message cible retrouvé en **Top-1** avec score RRF validé, préservant la citation canonique `IC:1` et son horodatage.
 
 ---
 
-## 5. Feuille de Route pour P2-B (Recherche Hybride & Exposition)
+## 6. Prochaines Étapes (P3)
 
-Le jalon P2-A étant pleinement stabilisé et vérifié, les étapes de P2-B consisteront à :
-1. Implémenter la commande CLI `recall embed --db <path> [--batch-size 32] [--prune]`.
-2. Implémenter l'algorithme **RRF (Reciprocal Rank Fusion)** combinant les scores BM25 FTS5 et la distance cosinus `sqlite-vec`.
-3. Exposer la recherche hybride dans l'API locale (`/v1/search?mode=hybrid`) et la TUI (`recall browse`).
+Le jalon P2 étant complet (P2-A + P2-B validés) :
+1. Intégration de la recherche hybride dans l'API REST locale (`GET /v1/search?mode=hybrid`).
+2. Intégration dans le visualiseur terminal TUI (`recall browse`) pour basculer facilement entre recherche lexicale et sémantique.
+

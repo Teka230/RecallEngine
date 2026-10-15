@@ -25,3 +25,9 @@ impl RecallError {
         Self::Message(s.into())
     }
 }
+
+impl From<anyhow::Error> for RecallError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Message(err.to_string())
+    }
+}

@@ -215,6 +215,7 @@ fn test_semantic_conceptual_retrieval_fastembed_vs_fts5() {
         .search(SearchQuery {
             text: conceptual_query.to_string(),
             syntax: SearchSyntax::Simple,
+            mode: recall_engine::search::SearchMode::Lexical,
             count_mode: CountMode::Exact,
             limit: 10,
             offset: 0,

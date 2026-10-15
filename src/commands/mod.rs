@@ -1,4 +1,5 @@
 pub mod browse;
+pub mod embed;
 pub mod export;
 pub mod import;
 pub(crate) mod read_api_v1;
@@ -103,6 +104,25 @@ pub fn run(cli: Cli) -> Result<()> {
                 export::bundles::run_bundle(db, out, profile, format, force)
             }
         },
+        Commands::Embed {
+            db,
+            batch_size,
+            prune,
+            allow_download,
+            cache_dir,
+            json,
+        } => embed::run_embed(embed::EmbedOptions {
+            db_path: db,
+            batch_size,
+            prune,
+            offline_mode: if allow_download {
+                crate::semantic::embedding::OfflineMode::AllowDownload
+            } else {
+                crate::semantic::embedding::OfflineMode::StrictOffline
+            },
+            cache_dir,
+            as_json: json,
+        }),
         Commands::Search {
             db,
             query,
@@ -115,10 +135,11 @@ pub fn run(cli: Cli) -> Result<()> {
             date_max,
             limit,
             offset,
+            mode,
             json,
         } => search::run_search(
             db, query, syntax, count_mode, role, ic_min, ic_max, date_min, date_max, limit, offset,
-            json,
+            mode, json,
         ),
     }
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::domain::reference::ContextScope;
-use crate::search::{CountMode, SearchRole, SearchSyntax};
+use crate::search::{CountMode, SearchMode, SearchRole, SearchSyntax};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -83,6 +83,20 @@ pub enum Commands {
         #[command(subcommand)]
         target: ExportTarget,
     },
+    Embed {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long, default_value_t = 32)]
+        batch_size: usize,
+        #[arg(long)]
+        prune: bool,
+        #[arg(long)]
+        allow_download: bool,
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     Search {
         #[arg(long)]
         db: PathBuf,
@@ -105,6 +119,8 @@ pub enum Commands {
         limit: u32,
         #[arg(long, default_value = "0")]
         offset: u32,
+        #[arg(long, value_enum, default_value = "lexical")]
+        mode: SearchMode,
         #[arg(long)]
         json: bool,
     },

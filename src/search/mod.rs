@@ -27,10 +27,20 @@ pub enum CountMode {
     Exact,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    #[default]
+    Lexical,
+    Semantic,
+    Hybrid,
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchQuery {
     pub text: String,
     pub syntax: SearchSyntax,
+    pub mode: SearchMode,
     pub limit: u32,
     pub offset: u32,
     pub count_mode: CountMode,
